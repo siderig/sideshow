@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=sideshow
+Description=sideshow boot splash (Loading…)
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/sideshow
+ScriptFile=/usr/share/plymouth/themes/sideshow/sideshow.script

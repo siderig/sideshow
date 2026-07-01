@@ -1,0 +1,36 @@
+# Secrets — never commit. The node keeps env dumps that contain tokens/agent vars.
+*.env
+!*.env.example
+.env
+secrets/
+*.secret
+
+# Node / build
+node_modules/
+dist/
+build/
+*.log
+
+# Go agent build artifacts
+/agent/agent
+/agent/sideshow-agent*
+
+# Snapshots we deliberately don't track
+**/.ssh/
+**/.bash_history
+**/.Xauthority
+**/.config/chromium/
+
+# macOS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local-only, not published: personal node snapshots + internal handoffs/commercial
+# notes live under .private/; CLAUDE.md is maintainer-specific (private node access);
+# .claude/ is local Claude Code state; domain.txt is a scratch list.
+/.private/
+/CLAUDE.md
+/.claude/
+/domain.txt

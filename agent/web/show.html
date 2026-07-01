@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sideshow player</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #stage > * { position: absolute; inset: 0; width: 100%; height: 100%; }
+  img, video { object-fit: contain; background: #000; }
+  embed, iframe { border: 0; background: #fff; }
+  .fade { transition: opacity .5s ease; }
+  .out { opacity: 0; }
+  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #556; font: 16px system-ui, sans-serif; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="msg" class="hidden">Empty playlist</div>
+<script>
+"use strict";
+let cfg = { items: [], interval_s: 8, loop: true, shuffle: false, transition: "fade" };
+let order = [], pos = -1, gen = 0, timer = null, stallTimer = null, current = null;
+
+function mediaURL(it) {
+  const s = it.src || "";
+  if (/^https?:\/\//i.test(s)) return s;
+  return "/media/" + s.split("/").map(encodeURIComponent).join("/");
+}
+function clearTimers() { if (timer) { clearTimeout(timer); timer = null; } if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } }
+
+// advance is guarded by a generation token: a timer or media event left over
+// from a previous item (a stale listener on a swapped-out video) carries an older
+// g and is ignored, so it can never double-advance or skip an item.
+function advance(g) { if (g === gen) go(); }
+
+async function reload() {
+  try { const r = await fetch("/api/playlist-media", { cache: "no-store" }); if (r.ok) cfg = await r.json(); } catch (e) {}
+  const items = (cfg && cfg.items) || [];
+  order = items.map((_, i) => i);
+  if (cfg && cfg.shuffle) for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  document.getElementById("msg").classList.toggle("hidden", items.length > 0);
+}
+
+// neutralize stops the outgoing media element so it can't keep decoding/playing
+// after a swap, and drops its listeners so a late 'ended' can't re-fire.
+function neutralize(el) {
+  if (el && el.pause) { try { el.pause(); } catch (e) {} el.onended = el.onerror = null; try { el.removeAttribute("src"); el.load && el.load(); } catch (e) {} }
+}
+function swapIn(el) {
+  const stage = document.getElementById("stage"), old = current, fade = !(cfg && cfg.transition === "none");
+  neutralize(old);
+  if (fade) {
+    el.classList.add("fade", "out"); stage.appendChild(el);
+    requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove("out")));
+    if (old) { old.classList.add("fade", "out"); setTimeout(() => old.remove(), 550); }
+  } else { stage.innerHTML = ""; stage.appendChild(el); }
+  current = el;
+}
+
+function render(it, g) {
+  const dwell = it.duration_s > 0 ? it.duration_s : (cfg.interval_s || 8);
+  if (it.kind === "image") {
+    const el = new Image(); el.onerror = () => advance(g); el.src = mediaURL(it);
+    swapIn(el); timer = setTimeout(() => advance(g), dwell * 1000);
+  } else if (it.kind === "video" || it.kind === "audio") {
+    const el = document.createElement(it.kind);
+    el.src = mediaURL(it); el.autoplay = true; el.playsInline = true; el.controls = false;
+    if (it.kind === "audio") el.style.opacity = "0";
+    el.addEventListener("ended", () => advance(g), { once: true });
+    el.addEventListener("error", () => { stallTimer = setTimeout(() => advance(g), 2000); }, { once: true });
+    // stall watchdog: a clip that buffers/stalls fires neither 'ended' nor
+    // 'error', so advance after a short wait instead of freezing the frame.
+    const armStall = () => { if (stallTimer) clearTimeout(stallTimer); stallTimer = setTimeout(() => advance(g), Math.max(15, cfg.interval_s || 8) * 1000); };
+    el.addEventListener("waiting", armStall);
+    el.addEventListener("stalled", armStall);
+    el.addEventListener("playing", () => { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } });
+    if (it.duration_s > 0) timer = setTimeout(() => advance(g), it.duration_s * 1000); // hard cap when set
+    swapIn(el); el.play && el.play().catch(() => {});
+  } else if (it.kind === "doc") {
+    const el = document.createElement("embed"); el.type = "application/pdf"; el.src = mediaURL(it) + "#toolbar=0&navpanes=0&view=FitH";
+    swapIn(el); timer = setTimeout(() => advance(g), dwell * 1000);
+  } else { timer = setTimeout(() => advance(g), 50); }
+}
+
+function go() {
+  gen++; clearTimers();
+  const items = (cfg && cfg.items) || [];
+  if (!items.length) { document.getElementById("msg").classList.remove("hidden"); timer = setTimeout(reloadAndStart, 5000); return; }
+  pos++;
+  if (pos >= order.length) { if (cfg.loop === false) return; reloadAndStart(); return; } // wrap: re-fetch so live edits apply
+  render(items[order[pos]], gen);
+}
+
+async function reloadAndStart() { await reload(); pos = -1; go(); }
+
+reloadAndStart();
+setInterval(reload, 30000); // pick up playlist edits mid-loop (config only; never advances)
+</script>
+</body>
+</html>

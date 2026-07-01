@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sideshow · Setup</title>
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #151922; --panel2: #1b1f2a; --line: #262c39; --fg: #e6e9ef;
+    --muted: #8b93a7; --accent: #4f9cff; --ok: #36d399; --warn: #fbbd23; --down: #f87272; --tile: #10141d;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+  header .brand { font-weight: 600; font-size: 15px; }
+  header .step { margin-left: auto; color: var(--muted); font-size: 12px; }
+  main { padding: 20px; max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 6px 0 2px; }
+  .lead { color: var(--muted); margin: 0 0 18px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13px; }
+  .kv span:nth-child(odd) { color: var(--muted); }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .url { font-size: 16px; font-weight: 600; word-break: break-all; padding: 10px 12px; background: var(--tile); border: 1px solid var(--line); border-radius: 8px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: var(--panel2); color: var(--fg); padding: 8px 16px; cursor: pointer; font-size: 13px; }
+  .seg button.on { background: var(--accent); color: #04121f; font-weight: 600; }
+  .feat { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--tile); margin-top: 8px; }
+  .feat input { accent-color: var(--accent); width: 16px; height: 16px; }
+  .feat .t { flex: 1; }
+  .feat .t small { display: block; color: var(--muted); font-size: 11px; }
+  .feat .badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .feat .badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+  button { cursor: pointer; border: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); color: var(--fg); padding: 9px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #04121f; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+  .meta { color: var(--muted); font-size: 12px; }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 12px; overflow: auto; max-height: 260px; margin: 12px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .hidden { display: none !important; }
+  .warn { color: var(--warn); }
+  .ok { color: var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot"></span><span class="brand">Sideshow</span>
+  <span class="step">First-run setup</span>
+</header>
+<main>
+  <h1>Set up this display node</h1>
+  <p class="lead">Install the features you want, then finish — the node switches to its normal display and this wizard locks.</p>
+
+  <div class="panel">
+    <h2>This node</h2>
+    <div class="kv" id="detect">
+      <span>arch</span><span class="mono" id="d-arch">…</span>
+      <span>memory</span><span class="mono" id="d-ram">…</span>
+      <span>seat user</span><span class="mono" id="d-seat">…</span>
+      <span>apt</span><span class="mono" id="d-apt">…</span>
+      <span>auth key</span><span class="mono" id="d-auth">…</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Open this on your phone or laptop</h2>
+    <div class="url" id="setup-url">…</div>
+    <p class="meta" style="margin:8px 0 0">Point another device on the same network at this URL to finish setup from a bigger screen.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Compositor</h2>
+    <div class="seg" id="comp"><button data-c="x11">X11 · matchbox</button><button data-c="wayland">Wayland · labwc</button></div>
+    <p class="meta" id="comp-note" style="margin:10px 0 0"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Features to install</h2>
+    <div id="features"></div>
+    <div class="row">
+      <button class="primary" id="install-btn">Install prerequisites</button>
+      <span class="meta" id="install-status"></span>
+    </div>
+    <pre id="log" class="hidden"></pre>
+  </div>
+
+  <div class="panel">
+    <h2>Finish</h2>
+    <p class="meta" id="finish-note">When the features you need are installed, finish setup. You can install more later from Settings.</p>
+    <div class="row"><button class="primary" id="finish-btn">Finish setup →</button></div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let comp = "x11", info = null, polling = null;
+
+async function api(method, path, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok) throw new Error((data && data.error) || ("HTTP " + r.status));
+  return data;
+}
+
+function renderDetect(d) {
+  $("d-arch").textContent = d.arch || "?";
+  $("d-ram").textContent = d.ram_mb ? (d.ram_mb + " MB") : "?";
+  $("d-seat").textContent = (d.seat_user || "?") + (d.seat_user_exists ? " ✓" : " (will be created)");
+  $("d-apt").textContent = d.apt_available ? "available" : "not found";
+  $("d-auth").innerHTML = d.auth_enabled ? '<span class="ok">key set</span>' : '<span class="warn">open (no key) — set one after setup</span>';
+  $("setup-url").textContent = window.location.origin + "/setup";
+}
+
+function renderFeatures(d) {
+  const box = $("features"); box.innerHTML = "";
+  (d.features || []).forEach(f => {
+    const row = document.createElement("label"); row.className = "feat";
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.dataset.key = f.key;
+    cb.checked = f.required || f.installed; cb.disabled = f.required;
+    const t = document.createElement("div"); t.className = "t";
+    const title = document.createElement("div"); title.textContent = f.label;
+    const sub = document.createElement("small"); sub.textContent = (f.packages || []).join(", ");
+    t.appendChild(title); t.appendChild(sub);
+    const badge = document.createElement("span");
+    badge.className = "badge" + (f.installed ? " ok" : "");
+    badge.textContent = f.installed ? "installed" : (f.required ? "required" : "optional");
+    row.appendChild(cb); row.appendChild(t); row.appendChild(badge);
+    box.appendChild(row);
+  });
+}
+
+function selectedFeatures() {
+  return Array.from(document.querySelectorAll('#features input:checked')).map(c => c.dataset.key);
+}
+
+async function load(compositor) {
+  info = await api("GET", "/api/setup" + (compositor ? "?compositor=" + compositor : ""));
+  comp = info.recommended_compositor || "x11";
+  document.querySelectorAll("#comp button").forEach(b => b.classList.toggle("on", b.dataset.c === comp));
+  $("comp-note").textContent = comp === "wayland"
+    ? "Wayland (labwc) — GPU-accelerated; best on a capable x86 GPU."
+    : "X11 (matchbox) — software-friendly; best on a Raspberry Pi / weak GPU.";
+  renderDetect(info);
+  renderFeatures(info);
+  reflectInstalling(info);
+}
+
+function reflectInstalling(d) {
+  const btn = $("install-btn"), status = $("install-status"), log = $("log");
+  if (d.installing) {
+    btn.disabled = true; status.textContent = "installing… (this can take several minutes)";
+    if (d.log_tail) { log.classList.remove("hidden"); log.textContent = d.log_tail; }
+    if (!polling) polling = setInterval(pollInstall, 3000);
+  } else {
+    btn.disabled = false;
+    if (d.last_result === "ok") status.innerHTML = '<span class="ok">install complete</span>';
+    else if (d.last_result === "failed") status.innerHTML = '<span class="warn">install failed — see log</span>';
+    if (d.log_tail) { log.classList.remove("hidden"); log.textContent = d.log_tail; }
+    if (polling) { clearInterval(polling); polling = null; }
+  }
+}
+
+async function pollInstall() {
+  try { const d = await api("GET", "/api/setup?compositor=" + comp); reflectInstalling(d); if (!d.installing) renderFeatures(d); }
+  catch (e) {}
+}
+
+document.querySelectorAll("#comp button").forEach(b => b.onclick = () => { comp = b.dataset.c; load(comp); });
+
+$("install-btn").onclick = async () => {
+  const features = selectedFeatures();
+  $("install-btn").disabled = true; $("install-status").textContent = "starting…";
+  try {
+    await api("POST", "/api/setup/install", { compositor: comp, features });
+    $("log").classList.remove("hidden"); $("log").textContent = "installing…";
+    if (!polling) polling = setInterval(pollInstall, 3000);
+    $("install-status").textContent = "installing…";
+  } catch (e) { $("install-btn").disabled = false; $("install-status").textContent = e.message; }
+};
+
+$("finish-btn").onclick = async () => {
+  $("finish-btn").disabled = true;
+  try {
+    await api("POST", "/api/setup/finish");
+    $("finish-note").innerHTML = '<span class="ok">Setup complete.</span> Opening the control panel…';
+    setTimeout(() => (window.location.href = "/"), 1200);
+  } catch (e) { $("finish-btn").disabled = false; $("finish-note").textContent = e.message; }
+};
+
+load("");
+</script>
+</body>
+</html>

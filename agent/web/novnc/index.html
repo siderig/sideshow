@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sideshow · live screen</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0d12; color: #e6e9ef;
+    font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; height: 34px; display: flex; align-items: center;
+    gap: 12px; padding: 0 14px; background: #151922cc; border-bottom: 1px solid #262c39; z-index: 10;
+    backdrop-filter: blur(6px); }
+  #bar b { color: #4f9cff; }
+  #dot { width: 9px; height: 9px; border-radius: 50%; background: #fbbd23; }
+  #dot.ok { background: #36d399; } #dot.down { background: #f87272; }
+  .spacer { flex: 1; }
+  #bar button { cursor: pointer; border: 1px solid #262c39; background: #1d2330; color: #e6e9ef;
+    padding: 5px 10px; border-radius: 7px; font-size: 12px; }
+  #bar button.on { background: #4f9cff; color: #04121f; border-color: #4f9cff; }
+  .hidden { display: none !important; }
+  #screen { position: absolute; inset: 34px 0 0 0; }
+  #msg { position: absolute; inset: 34px 0 0 0; display: flex; align-items: center; justify-content: center;
+    color: #8b93a7; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span id="dot"></span>
+  <span>sideshow · <b id="host">live</b></span>
+  <span class="spacer"></span>
+  <span id="state">connecting…</span>
+  <button id="ctrl" class="hidden">Take control</button>
+  <button id="re">Reconnect</button>
+</div>
+<div id="msg">connecting to the live screen…</div>
+<div id="screen"></div>
+
+<script type="module">
+import RFB from './core/rfb.js';
+
+const $ = (id) => document.getElementById(id);
+$("host").textContent = location.hostname;
+let rfb = null;
+let controlling = false; // default view-only; toggled only when the API is key-protected
+
+function setState(s, cls) { $("state").textContent = s; $("dot").className = cls || ""; }
+
+function connect() {
+  $("msg").style.display = "flex";
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${proto}://${location.host}/vnc/ws`;
+  try {
+    rfb = new RFB($("screen"), url, {});
+  } catch (e) { setState("error: " + e.message, "down"); return; }
+  rfb.scaleViewport = true;     // fit the node's screen into the browser window
+  rfb.resizeSession = false;    // don't ask the node to change resolution
+  rfb.viewOnly = !controlling;  // view-only unless the operator opted in (key-protected only)
+  rfb.addEventListener("connect", () => { setState("connected", "ok"); $("msg").style.display = "none"; });
+  rfb.addEventListener("disconnect", (e) => {
+    setState("disconnected" + (e.detail && e.detail.clean ? "" : " (lost)"), "down");
+    $("msg").style.display = "flex"; $("msg").textContent = "disconnected — press Reconnect";
+  });
+  rfb.addEventListener("securityfailure", (e) => setState("auth failed", "down"));
+}
+
+$("re").onclick = () => { if (rfb) { try { rfb.disconnect(); } catch {} } connect(); };
+$("ctrl").onclick = () => {
+  controlling = !controlling;
+  if (rfb) rfb.viewOnly = !controlling;
+  $("ctrl").textContent = controlling ? "Release control" : "Take control";
+  $("ctrl").classList.toggle("on", controlling);
+};
+// Only offer input control when the control surface is key-protected.
+fetch("/api/vnc").then(r => r.ok ? r.json() : null).then(v => {
+  if (v && v.controllable) $("ctrl").classList.remove("hidden");
+}).catch(() => {});
+connect();
+</script>
+</body>
+</html>

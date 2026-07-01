@@ -1,0 +1,1090 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sideshow</title>
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #151922; --panel2: #1b1f2a; --line: #262c39; --fg: #e6e9ef;
+    --muted: #8b93a7; --accent: #4f9cff; --ok: #36d399; --warn: #fbbd23; --down: #f87272;
+    --track: #0b0d12; --tile: #10141d;
+  }
+  body.light {
+    --bg: #f4f6fb; --panel: #ffffff; --panel2: #f0f3f9; --line: #dde2ec; --fg: #1a1f2b;
+    --muted: #5b6478; --accent: #2563eb; --ok: #1a9e6a; --warn: #b7791f; --down: #d83b3b;
+    --track: #eef1f7; --tile: #f7f9fd;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; transition: background .2s, color .2s; }
+  a { color: var(--accent); }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 20; }
+  header .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; }
+  header .brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+  header .host { color: var(--muted); font-weight: 500; }
+  .badge { font-size: 12px; padding: 2px 9px; border-radius: 999px; font-weight: 600; border: 1px solid var(--line); }
+  .badge.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+  .badge.degraded { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+  .badge.down { color: var(--down); border-color: color-mix(in srgb, var(--down) 40%, transparent); }
+  .spacer { flex: 1; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .iconbtn { cursor: pointer; border: 1px solid var(--line); background: var(--panel2); color: var(--fg); width: 34px; height: 34px; border-radius: 8px; font-size: 15px; display: inline-flex; align-items: center; justify-content: center; }
+  .iconbtn:hover { border-color: var(--accent); }
+  nav.tabs { display: flex; gap: 6px; padding: 12px 20px 0; flex-wrap: wrap; }
+  nav.tabs button { cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--muted); padding: 8px 16px; border-radius: 999px; font-size: 14px; font-weight: 500; display: inline-flex; gap: 7px; align-items: center; }
+  nav.tabs button.on { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); border-color: var(--accent); color: var(--accent); }
+  main { padding: 18px 20px 60px; max-width: 1040px; margin: 0 auto; }
+  .view { display: none; }
+  .view.on { display: block; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .panel h2 .tag { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--fg); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .cards .panel { margin: 0; }
+  .hero { display: grid; grid-template-columns: minmax(220px, 360px) 1fr; gap: 16px; align-items: stretch; }
+  @media (max-width: 720px) { .hero { grid-template-columns: 1fr; } }
+  .shot-wrap { position: relative; background: #000; border: 1px solid var(--line); border-radius: 10px; aspect-ratio: 16/9; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .shot-wrap img { width: 100%; height: 100%; object-fit: contain; display: none; }
+  .shot-empty { color: var(--muted); font-size: 13px; }
+  .live-pill { position: absolute; left: 8px; top: 8px; font-size: 11px; padding: 2px 9px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 22%, #000); color: #cfe3ff; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); }
+  .nowinfo { display: flex; flex-direction: column; gap: 6px; }
+  .nowinfo .kbd { font-size: 12px; color: var(--muted); }
+  .nowinfo .title { font-size: 20px; font-weight: 600; }
+  .nowinfo .sub { color: var(--muted); font-size: 13px; word-break: break-all; }
+  .statepill { align-self: flex-start; font-size: 11px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); }
+  .statepill.running { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+  .statepill.starting { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+  .statepill.failed { color: var(--down); border-color: color-mix(in srgb, var(--down) 40%, transparent); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row.mt { margin-top: 10px; }
+  .lbl { color: var(--muted); font-size: 12px; align-self: center; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 4px; }
+  label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg); margin: 0; }
+  label.chk input { accent-color: var(--accent); }
+  input[type=text], input[type=password] { width: 100%; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: 13px; }
+  input[type=time] { padding: 7px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: 13px; color-scheme: dark; }
+  body.light input[type=time] { color-scheme: light; }
+  input.num { width: 70px; }
+  textarea { width: 100%; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: 13px ui-monospace, Menlo, monospace; resize: vertical; }
+  select { padding: 7px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: 13px; }
+  button { cursor: pointer; border: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); color: var(--fg); padding: 8px 12px; border-radius: 8px; font-size: 13px; font-weight: 500; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #04121f; }
+  button.on { background: var(--accent); border-color: var(--accent); color: #04121f; }
+  button.danger:hover { border-color: var(--down); color: var(--down); }
+  button:disabled { opacity: .5; cursor: default; }
+  .uploadbtn { cursor: pointer; font-size: 11px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--accent) 8%, var(--panel)); font-weight: 500; }
+  .uploadbtn:hover { border-color: var(--accent); }
+  .uploadbtn input { display: none; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+  .kv span:nth-child(odd) { color: var(--muted); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr)); gap: 10px; }
+  .tile { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--tile); color: var(--fg); font-weight: 500; }
+  .tile .ic { font-size: 20px; }
+  .tile small { color: var(--muted); font-weight: 400; }
+  .tile.sel { border-color: var(--accent); }
+  .tile.on { border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--tile)); padding: 11px; }
+  .sheet { display: none; margin-top: 14px; border-top: 1px solid var(--line); padding-top: 14px; }
+  .sheet.on { display: block; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel2); color: var(--muted); cursor: pointer; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip:hover { border-color: var(--accent); color: var(--fg); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: var(--panel2); }
+  .seg button.on { background: var(--accent); color: #04121f; }
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .lrow { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--tile); }
+  .lrow .ic { color: var(--muted); font-size: 16px; width: 18px; text-align: center; }
+  .lrow .main { flex: 1; min-width: 0; }
+  .lrow .main .t { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lrow .main .s { font-size: 11px; color: var(--muted); }
+  .lrow .acts { display: flex; gap: 6px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 10px 2px; }
+  .metric { margin: 10px 0; }
+  .metric .top { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+  .bar { height: 7px; border-radius: 999px; background: var(--track); border: 1px solid var(--line); overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+  .bar > i.warn { background: var(--warn); }
+  .bar > i.down { background: var(--down); }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 12px; margin-top: 10px; }
+  .stat { font-size: 12px; }
+  .stat b { display: block; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat.warn b { color: var(--warn); }
+  details.sect { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 12px; background: var(--panel); overflow: hidden; }
+  details.sect > summary { cursor: pointer; padding: 14px 16px; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 10px; list-style: none; }
+  details.sect > summary::-webkit-details-marker { display: none; }
+  details.sect > summary .ic { color: var(--muted); }
+  details.sect > summary .tag { margin-left: auto; color: var(--muted); font-size: 12px; font-weight: 400; }
+  details.sect > .body { padding: 0 16px 16px; border-top: 1px solid var(--line); }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 12px; overflow: auto; max-height: 280px; margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #login { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 88%, transparent); display: none; align-items: center; justify-content: center; z-index: 50; backdrop-filter: blur(3px); }
+  #login.show { display: flex; }
+  #login .box { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; width: 320px; max-width: 90vw; }
+  #login h2 { margin: 0 0 4px; font-size: 15px; }
+  #login p { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+  #login input { width: 100%; padding: 10px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: 14px; }
+  #login .err { color: var(--down); font-size: 12px; min-height: 16px; margin-top: 8px; }
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 60; }
+  #toast.show { opacity: 1; }
+  #toast.err { border-color: var(--down); color: var(--down); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand"><span class="dot"></span>Sideshow <span class="host" id="host">·&nbsp;node</span></span>
+  <span class="badge" id="health">…</span>
+  <span class="meta" id="nowline">loading…</span>
+  <span class="spacer"></span>
+  <button class="iconbtn" id="theme-btn" title="light / dark">☾</button>
+  <button class="iconbtn hidden" id="logout" title="lock (forget the key on this browser)">🔒</button>
+  <span class="meta" id="clock"></span>
+</header>
+
+<nav class="tabs">
+  <button data-view="now" class="on">▶ Now</button>
+  <button data-view="library">▦ Library</button>
+  <button data-view="settings">⚙ Settings</button>
+</nav>
+
+<main>
+  <!-- ======================= NOW / CONTROL ======================= -->
+  <section class="view on" id="view-now">
+    <div class="panel">
+      <div class="hero">
+        <div class="shot-wrap">
+          <img id="shot" alt="live screen">
+          <div class="shot-empty" id="shot-empty">no live preview</div>
+          <span class="live-pill hidden" id="live-pill">live</span>
+        </div>
+        <div class="nowinfo">
+          <span class="kbd">Now showing</span>
+          <span class="title" id="now-title">—</span>
+          <span class="sub" id="now-sub"></span>
+          <span class="statepill" id="now-state">—</span>
+          <div class="row mt" id="hero-acts"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Switch mode</h2>
+      <div class="tiles" id="tiles">
+        <button class="tile" data-launch="web"><span class="ic">🌐</span>Web URL<small>a website</small></button>
+        <button class="tile" data-launch="playlist"><span class="ic">▦</span>Playlist<small>rotate items</small></button>
+        <button class="tile" data-launch="video"><span class="ic">🎬</span>Video<small>mpv player</small></button>
+        <button class="tile" data-launch="document"><span class="ic">📄</span>Document<small>PDF / slides</small></button>
+        <button class="tile" data-launch="airplay"><span class="ic">📱</span>AirPlay<small>mirror a device</small></button>
+        <button class="tile" data-launch="moonlight"><span class="ic">🎮</span>Moonlight<small>game stream</small></button>
+        <button class="tile" data-launch="steamlink"><span class="ic">🕹</span>Steam Link<small>remote play</small></button>
+        <button class="tile" data-launch="miracast"><span class="ic">📡</span>Miracast<small>wireless display</small></button>
+        <button class="tile" data-launch="console"><span class="ic">⌨</span>Console<small>a TTY app</small></button>
+        <button class="tile" data-launch="custom"><span class="ic">⚡</span>Custom<small>run a program</small></button>
+      </div>
+      <div class="sheet" id="sheet-web">
+        <label for="web-url">Web URL</label>
+        <input type="text" id="web-url" placeholder="https://example.com">
+        <div class="row mt"><button class="primary" id="web-go">Show now</button></div>
+        <div class="chips" id="web-recent"></div>
+      </div>
+      <div class="sheet" id="sheet-playlist">
+        <div class="row"><span class="lbl">items</span>
+          <span class="seg" id="pl-kind"><button data-kind="urls" class="on">URLs</button><button data-kind="images">Images</button></span>
+        </div>
+        <label id="pl-help">One URL per line — the kiosk rotates through them.</label>
+        <textarea id="pl-items" rows="4" placeholder="https://one.example&#10;https://two.example"></textarea>
+        <div class="row mt"><span class="lbl">every</span><input type="text" id="pl-interval" class="num" value="30"><span class="lbl">s</span>
+          <button class="primary" id="pl-start">Start</button><button id="pl-stop">Stop</button></div>
+      </div>
+      <div class="sheet" id="sheet-video">
+        <label>Media source — http(s):// / rtsp:// / file:// / /abs/path</label>
+        <input type="text" id="vid-src" placeholder="https://… or /srv/media/clip.mp4">
+        <div class="row mt"><label class="chk"><input type="checkbox" id="vid-loop" checked> loop</label>
+          <label class="chk"><input type="checkbox" id="vid-mute"> mute</label>
+          <button class="primary" id="vid-play">▶ Play</button></div>
+      </div>
+      <div class="sheet" id="sheet-document">
+        <label>PDF / slides — an http(s) URL or a path under the node's docs dir</label>
+        <input type="text" id="doc-src" placeholder="https://example/deck.pdf  or  reports/q3.pdf">
+        <div class="row mt"><span class="lbl">auto-advance</span><input type="text" id="doc-adv" class="num" value="0"><span class="lbl">s (0 = off)</span>
+          <button class="primary" id="doc-show">Show</button><button id="doc-stop">Stop</button></div>
+      </div>
+      <div class="sheet" id="sheet-airplay">
+        <label>AirPlay receiver (uxplay) — discovered on the network as this node's name.</label>
+        <div class="row"><label class="chk"><input type="checkbox" id="ap-audio"> audio</label>
+          <label class="chk" title="Direct DRM/KMS — faster, works without X/Wayland."><input type="checkbox" id="ap-kms" checked> framebuffer (KMS)</label>
+          <button class="primary" id="ap-start">📱 Start AirPlay</button></div>
+      </div>
+      <div class="sheet" id="sheet-moonlight">
+        <label>Moonlight host (IP / hostname) — leave blank for the pairing UI. Pair once: <span class="mono">moonlight-qt pair HOST</span></label>
+        <input type="text" id="ml-host" placeholder="192.168.1.50">
+        <div class="row mt"><button class="primary" id="ml-start">🎮 Start Moonlight</button></div>
+      </div>
+      <div class="sheet" id="sheet-steamlink">
+        <label>Steam Link — Steam Remote Play from a PC running Steam. Its own UI picks + pairs the host. Needs the steamlink client installed (X11 nodes; the agent's <span class="mono">-steamlink-cmd</span>).</label>
+        <div class="row mt"><button class="primary" id="sl-start">🕹 Start Steam Link</button></div>
+      </div>
+      <div class="sheet" id="sheet-miracast">
+        <label><b>Experimental.</b> Miracast / wireless-display sink — cast from a phone/PC. Wi-Fi P2P can knock this node off its own network, so it needs the agent's <span class="mono">-allow-miracast</span>. Configure the interface pin, time-box, and auto-abort under <b>Settings → Miracast</b>.</label>
+        <div class="row mt"><button class="danger" id="mc-start">📡 Start Miracast</button><span class="meta" id="mc-note"></span></div>
+      </div>
+      <div class="sheet" id="sheet-console">
+        <label>Console app (runs on a dedicated VT — the kiosk stays alive behind it)</label>
+        <input type="text" id="con-cmd" placeholder="htop" value="htop">
+        <div class="row mt"><button class="primary" id="con-run">Run on screen</button>
+          <button class="chip" data-con="htop">htop</button><button class="chip" data-con="top">top</button></div>
+      </div>
+      <div class="sheet" id="sheet-custom">
+        <label>Program (absolute path or a command on PATH)</label>
+        <input type="text" id="cm-cmd" placeholder="/usr/bin/siderig-viewer">
+        <label>Arguments (space-separated)</label>
+        <input type="text" id="cm-args" placeholder="--config /etc/siderig.toml --fullscreen">
+        <div class="row mt"><span class="lbl">surface</span>
+          <select id="cm-display"><option value="compositor">GUI (X11)</option><option value="console">Console (TTY)</option></select>
+          <button class="primary" id="cm-run">⚡ Launch</button></div>
+        <p class="meta" style="margin-top:8px">Saved, named custom modes (and framebuffer/root programs) arrive in the next build.</p>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="panel">
+        <h2>Screen <span class="tag" id="screen-tag"></span></h2>
+        <div class="row" id="power">
+          <button data-screen="false" class="danger" title="power the display off; the content keeps running behind it">😴 Sleep display</button>
+          <button data-screen="true" title="power the display back on">☀ Wake display</button>
+        </div>
+        <label>Nightly sleep schedule (node-local) · <span id="sched-state" class="mono">…</span></label>
+        <div class="row" id="sched">
+          <input type="time" id="sched-sleep" value="22:00"><span class="lbl">→</span><input type="time" id="sched-wake" value="07:00">
+          <button class="primary" id="sched-save">Enable</button><button id="sched-off">Disable</button>
+        </div>
+        <p class="meta" style="margin-top:8px">Sleeping keeps the content running behind the dark screen — it reappears instantly on wake.</p>
+      </div>
+
+      <div class="panel hidden" id="tv-card">
+        <h2>TV <span class="tag" id="tv-name"></span></h2>
+        <div class="kv"><span>power</span><span class="mono" id="tv-power">—</span><span>vendor</span><span class="mono" id="tv-vendor">—</span></div>
+        <div class="row mt"><button class="primary" id="tv-on">On</button><button class="danger" id="tv-off">Off</button><button id="tv-source">Switch input here</button></div>
+        <div class="row mt"><button data-cec="volume-down">Vol −</button><button data-cec="volume-up">Vol +</button><button data-cec="mute">Mute</button></div>
+      </div>
+
+      <div class="panel">
+        <h2>System <span class="tag mono" id="sys-model"></span></h2>
+        <div class="metric"><div class="top"><span>CPU</span><b id="cpu-v">—</b></div><div class="bar"><i id="cpu-bar"></i></div></div>
+        <div class="metric"><div class="top"><span>Memory</span><b id="mem-v">—</b></div><div class="bar"><i id="mem-bar"></i></div></div>
+        <div class="metric"><div class="top"><span>Disk /</span><b id="disk-v">—</b></div><div class="bar"><i id="disk-bar"></i></div></div>
+        <div class="grid3">
+          <div class="stat"><span class="meta">Load</span><b id="load-v">—</b></div>
+          <div class="stat" id="temp-s"><span class="meta">Temp</span><b id="temp-v">—</b></div>
+          <div class="stat"><span class="meta">Uptime</span><b id="up-v">—</b></div>
+          <div class="stat"><span class="meta">Resolution</span><b id="res-v">—</b></div>
+          <div class="stat" id="thr-s"><span class="meta">Power</span><b id="thr-v">—</b></div>
+          <div class="stat"><span class="meta">Cores</span><b id="cores-v">—</b></div>
+        </div>
+        <div id="upg" style="margin-top:12px;border-top:1px solid var(--line);padding-top:10px">
+          <div class="row" style="justify-content:space-between">
+            <span class="meta" id="upg-line">checking upgrades…</span>
+            <span class="row"><button id="upg-check">Check</button><button id="upg-run" class="primary">Upgrade</button></span>
+          </div>
+          <pre id="upg-log" class="hidden"></pre>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>On-screen message</h2>
+        <input type="text" id="msg-text" placeholder="text to overlay on the screen">
+        <div class="row mt"><span class="lbl">where</span>
+          <select id="msg-pos"><option value="top">top</option><option value="bottom">bottom</option><option value="center">center</option></select>
+          <input type="text" id="msg-sec" class="num" value="30"><span class="lbl">s (0 = until cleared)</span></div>
+        <div class="row mt"><button class="primary" id="msg-show">Show</button><button id="msg-clear">Clear</button></div>
+      </div>
+
+      <div class="panel">
+        <h2>Power</h2>
+        <p class="meta" style="margin-top:0">Reboot brings the node back to the same mode.</p>
+        <div class="row"><button id="pw-reboot" class="danger">⟳ Reboot node</button><button id="pw-shutdown" class="danger hidden" title="the node will NOT power back on by itself">⏻ Shutdown</button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= LIBRARY ======================= -->
+  <section class="view" id="view-library">
+    <nav class="tabs" style="padding:0 0 14px" id="lib-tabs">
+      <button data-lib="recent" class="on">Recent</button>
+      <button data-lib="media">Media</button>
+      <button data-lib="playlist">Playlist</button>
+      <button data-lib="web">Web</button>
+      <button data-lib="custom">Custom modes</button>
+    </nav>
+
+    <div class="view on" id="lib-recent">
+      <div class="panel">
+        <h2>Recent <span class="tag" id="recent-count"></span><span class="spacer"></span>
+          <button id="recent-clear" style="font-size:11px;padding:4px 10px">Clear all</button></h2>
+        <div class="list" id="recent-list"><div class="empty">nothing shown yet</div></div>
+      </div>
+    </div>
+
+    <div class="view" id="lib-media">
+      <div class="panel">
+        <h2>Media <span class="spacer"></span>
+          <label class="uploadbtn">⬆ Upload<input type="file" id="media-upload" multiple></label>
+          <button id="media-mkdir" style="font-size:11px;padding:6px 10px">＋ New folder</button></h2>
+        <div class="row" id="media-crumbs" style="margin-bottom:10px"></div>
+        <div class="list" id="media-list"><div class="empty">loading…</div></div>
+        <p class="meta" id="media-note" style="margin-top:10px"></p>
+      </div>
+    </div>
+
+    <div class="view" id="lib-playlist">
+      <div class="panel">
+        <h2>Media playlist <span class="tag" id="mpl-count"></span></h2>
+        <div class="list" id="mpl-items"><div class="empty">no items — add from Media (⊕) or a URL below</div></div>
+        <div class="row mt">
+          <select id="mpl-add-kind"><option value="image">image</option><option value="video">video</option><option value="audio">audio</option><option value="doc">doc</option></select>
+          <input type="text" id="mpl-add-url" placeholder="https://example/clip.mp4" style="flex:1;min-width:160px">
+          <button id="mpl-add">＋ Add URL</button>
+        </div>
+        <div class="row mt">
+          <span class="lbl">every</span><input type="text" id="mpl-interval" class="num" value="8"><span class="lbl">s</span>
+          <label class="chk"><input type="checkbox" id="mpl-loop" checked> loop</label>
+          <label class="chk"><input type="checkbox" id="mpl-shuffle"> shuffle</label>
+          <span class="lbl">transition</span><select id="mpl-trans"><option value="fade">fade</option><option value="none">none</option></select>
+        </div>
+        <div class="row mt"><button id="mpl-save">Save</button><button class="primary" id="mpl-play">▶ Play now</button>
+          <span class="meta">images/docs advance on the interval; videos + audio advance when they finish</span></div>
+      </div>
+    </div>
+
+    <div class="view" id="lib-web">
+      <div class="panel">
+        <h2>URL rotation <span class="tag" id="pl2-state"></span></h2>
+        <textarea id="pl2-urls" rows="3" placeholder="https://one.example&#10;https://two.example"></textarea>
+        <div class="row mt"><span class="lbl">rotate every</span><input type="text" id="pl2-interval" class="num" value="30"><span class="lbl">s</span>
+          <button class="primary" id="pl2-start">Start</button><button id="pl2-stop">Stop</button></div>
+        <label style="margin-top:14px">Image slideshow (URLs, injected over the kiosk) <span class="tag mono" id="ss-state"></span></label>
+        <textarea id="ss-images" rows="2" placeholder="https://example/a.jpg&#10;https://example/b.png"></textarea>
+        <div class="row mt"><span class="lbl">every</span><input type="text" id="ss-interval" class="num" value="6"><span class="lbl">s · fit</span>
+          <select id="ss-fit"><option value="contain">contain</option><option value="cover">cover</option></select>
+          <button class="primary" id="ss-start">Start</button><button id="ss-stop">Stop</button></div>
+        <label style="margin-top:14px">Document <span class="tag" id="doc2-state"></span></label>
+        <input type="text" id="doc2-src" placeholder="https://example/deck.pdf  or  reports/q3.pdf">
+        <div class="row mt"><span class="lbl">auto-advance</span><input type="text" id="doc2-adv" class="num" value="0"><span class="lbl">s</span>
+          <button class="primary" id="doc2-show">Show</button><button id="doc2-stop">Stop</button></div>
+      </div>
+    </div>
+
+    <div class="view" id="lib-custom">
+      <div class="panel">
+        <h2>Custom modes <span class="tag" id="cm-count"></span></h2>
+        <div class="list" id="cm-list"><div class="empty">no saved custom modes</div></div>
+        <label style="margin-top:16px">New custom mode</label>
+        <input type="text" id="cmn-name" placeholder="name (e.g. Siderig Viewer)">
+        <input type="text" id="cmn-cmd" placeholder="/usr/bin/siderig-viewer" style="margin-top:8px">
+        <input type="text" id="cmn-args" placeholder="arguments — --config /etc/siderig.toml" style="margin-top:8px">
+        <div class="row mt"><span class="lbl">surface</span>
+          <select id="cmn-display"><option value="compositor">GUI (X11)</option><option value="wayland">GUI (Wayland)</option><option value="console">Console (TTY)</option><option value="kms">Framebuffer (root)</option></select>
+          <input type="hidden" id="cmn-id">
+          <button class="primary" id="cmn-save">Save</button><button id="cmn-clear">Clear</button></div>
+        <p class="meta" style="margin-top:8px">Framebuffer (KMS) programs run as <b>root</b> — the agent must be started with <span class="mono">-allow-custom-root</span>.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= SETTINGS ======================= -->
+  <section class="view" id="view-settings">
+    <details class="sect" open>
+      <summary><span class="ic">🆔</span> Node <span class="tag" id="set-node-tag"></span></summary>
+      <div class="body">
+        <div class="kv" style="margin-top:12px"><span>name</span><span class="mono" id="set-node-name">—</span></div>
+        <label>Rename node <span class="meta">— the hostname the fleet sees</span></label>
+        <div class="row"><input type="text" id="host-name" placeholder="e.g. lobby-screen" style="flex:1"><button class="primary" id="host-save">Rename</button></div>
+        <p class="meta" id="host-note" style="margin-top:8px"></p>
+      </div>
+    </details>
+    <details class="sect" id="wifi-sect">
+      <summary><span class="ic">📶</span> Network <span class="tag" id="wifi-tag"></span></summary>
+      <div class="body">
+        <div class="row" style="margin-top:12px"><button id="wifi-scan">Scan for networks</button><span class="meta" id="wifi-status"></span></div>
+        <div id="wifi-list" class="list" style="margin-top:12px"></div>
+        <p class="meta" id="wifi-note" style="margin-top:8px">Join or forget Wi-Fi networks (via NetworkManager). Passwords are never shown or stored in the panel.</p>
+      </div>
+    </details>
+    <details class="sect">
+      <summary><span class="ic">🖥</span> Display <span class="tag" id="set-disp-tag"></span></summary>
+      <div class="body">
+        <label>Rotate (X11)</label>
+        <div class="row" id="rotate"><button data-deg="0">0°</button><button data-deg="90">90°</button><button data-deg="180">180°</button><button data-deg="270">270°</button></div>
+        <label>Kiosk zoom · <span id="zoom-val" class="mono">100%</span></label>
+        <div class="row" id="zoom"><button data-zadd="-10">−</button><button data-zset="75">75%</button><button data-zset="100">100%</button><button data-zset="125">125%</button><button data-zset="150">150%</button><button data-zadd="10">+</button></div>
+        <div id="displays" class="hidden" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
+          <label>Outputs <span class="tag" id="disp-count"></span></label>
+          <div class="seg" id="layout"><button data-layout="single">Single</button><button data-layout="mirror">Mirror</button><button data-layout="extend">Extend</button></div>
+          <div id="outputs"></div>
+        </div>
+      </div>
+    </details>
+    <details class="sect">
+      <summary><span class="ic">🧠</span> Kiosk memory cap <span class="tag mono" id="memcap-state"></span></summary>
+      <div class="body" id="memcap-body">
+        <div class="row" style="gap:10px;margin-top:12px">
+          <label class="lbl">max <input type="text" id="memcap-max" class="num" placeholder="560"></label>
+          <label class="lbl">high <input type="text" id="memcap-high" class="num" placeholder="480"></label>
+          <label class="lbl">swap <input type="text" id="memcap-swap" class="num" placeholder="300"></label>
+          <button class="primary" id="memcap-apply">Apply</button><button id="memcap-off">Remove</button>
+        </div>
+      </div>
+    </details>
+    <details class="sect">
+      <summary><span class="ic">🎬</span> Boot splash <span class="tag" id="ply-state"></span></summary>
+      <div class="body">
+        <div class="row" style="margin-top:12px"><button class="primary" id="ply-on">Enable</button><button id="ply-off">Disable</button></div>
+        <div class="row mt"><input type="text" id="ply-msg" placeholder="Loading, please wait…" style="flex:1"><button id="ply-msg-save">Save message</button></div>
+        <p class="meta" id="ply-note" style="margin-top:8px"></p>
+      </div>
+    </details>
+    <details class="sect">
+      <summary><span class="ic">♻</span> Kiosk auto-reload</summary>
+      <div class="body">
+        <div class="row" style="margin-top:12px"><input type="text" id="rl-min" class="num" value="0"><span class="lbl">min (0 = off)</span>
+          <button id="rl-set">Set</button><button id="rl-now">Reload now</button></div>
+        <p class="meta" style="margin-top:8px">Periodically reloads the web kiosk page (memory hygiene for long-running signage).</p>
+      </div>
+    </details>
+    <details class="sect">
+      <summary><span class="ic">📡</span> Miracast <span class="tag" id="mc-set-tag"></span></summary>
+      <div class="body">
+        <p class="meta" id="mc-set-status" style="margin-top:12px"></p>
+        <label>Pin the P2P sink to a wireless interface <span class="meta">— a dedicated 2nd adapter (e.g. a USB dongle) avoids fighting the uplink radio</span></label>
+        <input type="text" id="mc-iface" placeholder="e.g. wlan1 — blank = launcher default">
+        <div class="row mt"><span class="lbl">auto-stop after</span><input type="text" id="mc-max" class="num" value="30"><span class="lbl">min (0 = never)</span></div>
+        <div class="row mt"><span class="lbl">abort if uplink lost</span><input type="text" id="mc-abort" class="num" value="30"><span class="lbl">s (0 = off)</span>
+          <button class="primary" id="mc-save">Save</button></div>
+        <p class="meta" style="margin-top:8px">Miracast is Wi-Fi Direct — on a single-radio node it can knock the box off its own network. Auto-abort restores the last mode so it self-recovers; a session time-box bounds how long it holds the radio. Best of all: run the uplink on <b>Ethernet</b>, or pin P2P to a 2nd adapter above.</p>
+      </div>
+    </details>
+    <details class="sect">
+      <summary><span class="ic">🛠</span> Advanced</summary>
+      <div class="body">
+        <div class="row" style="margin-top:12px"><button id="logs-refresh">Refresh logs</button><a href="/vnc" target="_blank" rel="noopener"><button>Open live view</button></a></div>
+        <pre id="logs">…</pre>
+        <details style="margin-top:10px"><summary class="meta" style="cursor:pointer">Raw snapshot</summary><pre id="raw">…</pre></details>
+      </div>
+    </details>
+  </section>
+</main>
+
+<div id="login">
+  <div class="box">
+    <h2>🔒 Sideshow locked</h2>
+    <p>Enter the node key to control this display.</p>
+    <input type="password" id="login-key" placeholder="key" autocomplete="current-password">
+    <div class="row" style="margin-top:10px"><button class="primary" id="login-go" style="flex:1">Unlock</button></div>
+    <div class="err" id="login-err"></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let busy = false, snap = null, curBackend = "compositor", lastHeroKey = "";
+
+function toast(msg, isErr) { const t = $("toast"); t.textContent = msg; t.className = "show" + (isErr ? " err" : ""); setTimeout(() => (t.className = ""), 2600); }
+async function api(method, path, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  if (r.status === 401) { showLogin(); throw new Error("locked"); }
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok) throw new Error((data && data.error) || ("HTTP " + r.status));
+  return data;
+}
+
+// ---- view + tab switching ----
+document.querySelectorAll("nav.tabs button[data-view]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav.tabs button[data-view]").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll("#view-now,#view-library,#view-settings").forEach(v => v.classList.toggle("on", v.id === "view-" + b.dataset.view));
+});
+document.querySelectorAll("#lib-tabs button[data-lib]").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#lib-tabs button[data-lib]").forEach(x => x.classList.toggle("on", x === b));
+  ["recent", "media", "playlist", "web", "custom"].forEach(n => $("lib-" + n).classList.toggle("on", n === b.dataset.lib));
+  if (b.dataset.lib === "media") loadMedia(curMediaPath);
+  if (b.dataset.lib === "playlist") loadPlaylist();
+  if (b.dataset.lib === "custom") renderCustom(snap, true);
+});
+
+// ---- auth ----
+function showLogin() { $("login").classList.add("show"); setTimeout(() => $("login-key").focus(), 50); }
+function hideLogin() { $("login").classList.remove("show"); $("login-err").textContent = ""; $("login-key").value = ""; }
+async function doLogin() {
+  const key = $("login-key").value;
+  try {
+    const r = await fetch("/api/auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+    if (!r.ok) { $("login-err").textContent = r.status === 401 ? "Invalid key" : ("error " + r.status); return; }
+    hideLogin(); pollSnapshot(); refreshLogs();
+  } catch (e) { $("login-err").textContent = e.message; }
+}
+$("login-go").onclick = doLogin;
+$("login-key").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
+$("logout").onclick = async () => { try { await fetch("/api/logout", { method: "POST" }); } catch {} showLogin(); };
+
+// ---- theme (kiosk + panel), header toggle ----
+function applyPanelTheme(dark) { document.body.classList.toggle("light", !dark); $("theme-btn").textContent = dark ? "☾" : "☀"; }
+function localDark() { return localStorage.getItem("sideshow-theme") !== "light"; }
+async function setTheme(dark) {
+  localStorage.setItem("sideshow-theme", dark ? "dark" : "light");
+  applyPanelTheme(dark);
+  try { await api("POST", "/api/theme", { dark }); toast((dark ? "dark" : "light") + " theme"); } catch (e) {}
+}
+$("theme-btn").onclick = () => setTheme(!localDark());
+
+// ---- describe "now showing" ----
+function describeNow(s) {
+  const m = s.mode || {}, c = s.content || {}, ss = s.slideshow || {}, d = s.document || {}, p = m.params || {};
+  if (m.type === "web") {
+    const pl = s.playlist || {};
+    if (p.url && pl.show_url && p.url === pl.show_url) return { icon: "▦", title: "Media playlist", sub: (pl.count || 0) + " items", tile: "playlist" };
+    if (d.enabled) return { icon: "📄", title: "Document", sub: d.src || "", tile: "document" };
+    if (ss.enabled) return { icon: "🖼", title: "Image slideshow", sub: (ss.images || []).length + " images", tile: "playlist" };
+    if (c.enabled) return { icon: "▦", title: "URL playlist", sub: (c.playlist || []).length + " URLs · every " + c.interval_s + "s", tile: "playlist" };
+    return { icon: "🌐", title: "Web", sub: p.url || "", tile: "web" };
+  }
+  const names = { media: ["🎬", "Video"], airplay: ["📱", "AirPlay"], moonlight: ["🎮", "Moonlight"], steamlink: ["🕹", "Steam Link"], miracast: ["📡", "Miracast"], app: ["⚡", "Program"], off: ["⏻", "Idle"] };
+  const n = names[m.type] || ["•", m.type || "—"];
+  let sub = "";
+  if (m.type === "media") sub = p.url || p.path || "";
+  else if (m.type === "app") sub = (p.argv || []).join(" ");
+  const tileMap = { media: "video", airplay: "airplay", moonlight: "moonlight", steamlink: "steamlink", miracast: "miracast", app: m.display === "console" ? "console" : "custom" };
+  return { icon: n[0], title: n[1], sub, tile: tileMap[m.type] || null };
+}
+
+function fmtUptime(s) {
+  if (!s) return "—";
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+// ---- hero (state-aware actions) ----
+function heroButton(label, title, cls, fn) {
+  const b = document.createElement("button"); b.textContent = label; b.title = title; if (cls) b.className = cls; b.onclick = fn; return b;
+}
+function renderHero(s) {
+  const m = s.mode || {}, disp = s.display || {}, vnc = s.vnc || {};
+  const asleep = !!disp.asleep;
+  const running = m.state === "running" && m.type !== "off";
+  const now = describeNow(s);
+  const hist = (s.state && s.state.history) || [];
+  const last = hist.find(it => it.type !== "off");
+
+  $("now-title").textContent = asleep ? "Display asleep" : now.title;
+  $("now-sub").textContent = asleep ? "the screen is off — content is " + (running ? "running behind it" : "stopped") : (now.sub || "");
+  $("nowline").textContent = (asleep ? "😴 " : now.icon + " ") + (asleep ? "asleep" : now.title) + (!asleep && now.sub ? " · " + now.sub : "");
+  const st = $("now-state"); st.textContent = asleep ? "asleep" : (m.state || "—"); st.className = "statepill " + (asleep ? "" : (m.state || ""));
+
+  // only rebuild the action buttons when the situation changes (avoids flicker/misclicks)
+  const key = [asleep, running, !!last, vnc.supported].join("|");
+  if (key !== lastHeroKey) {
+    lastHeroKey = key;
+    const box = $("hero-acts"); box.innerHTML = "";
+    if (asleep) {
+      box.appendChild(heroButton("☀ Wake display", "power the display back on", "primary", () => screenPower(true)));
+      if (running) box.appendChild(heroButton("⏹ Stop", "stop the content (screen stays off)", "", () => doMode({ type: "off" })));
+    } else if (running) {
+      box.appendChild(heroButton("↻ Restart", "reload the current mode", "", () => { if (confirm("Restart the current mode?")) power("/api/restart", "restarting"); }));
+      box.appendChild(heroButton("⏹ Stop", "stop; the screen goes idle (black)", "", () => doMode({ type: "off" })));
+      box.appendChild(heroButton("😴 Sleep display", "power the display off; content keeps running", "", () => screenPower(false)));
+      if (vnc.supported) box.appendChild(heroButton("🖥 Live view", "watch the live screen", "", () => window.open("/vnc", "_blank", "noopener")));
+    } else {
+      if (last) box.appendChild(heroButton("▶ Resume", "show " + (last.label || last.type) + " again", "primary", () => doMode(last.mode)));
+      box.appendChild(heroButton("😴 Sleep display", "power the display off", "", () => screenPower(false)));
+    }
+  }
+
+  // live preview
+  $("live-pill").classList.toggle("hidden", !(m.state === "running" && !asleep));
+  // active-mode tile highlight
+  document.querySelectorAll(".tile[data-launch]").forEach(t => t.classList.toggle("on", t.dataset.launch === now.tile));
+  // recent web chips in the web sheet
+  const webChips = hist.filter(it => it.type === "web" && it.mode && it.mode.params && it.mode.params.url).slice(0, 6);
+  const wr = $("web-recent"); wr.innerHTML = "";
+  webChips.forEach(it => { const c = document.createElement("span"); c.className = "chip"; c.textContent = it.mode.params.url; c.title = it.mode.params.url; c.onclick = () => { $("web-url").value = it.mode.params.url; }; wr.appendChild(c); });
+}
+
+// ---- main render ----
+function render(s) {
+  snap = s;
+  $("host").innerHTML = "·&nbsp;" + (s.node || "node");
+  document.title = "Sideshow · " + (s.node || "node");
+  const h = $("health"); h.textContent = s.health || "?"; h.className = "badge " + (s.health || "");
+  $("clock").textContent = s.time ? new Date(s.time).toLocaleTimeString() : "";
+  $("logout").classList.toggle("hidden", !s.auth);
+  const m = s.mode || {};
+  curBackend = (m.type === "web") ? (m.display || "compositor") : "compositor";
+  applyPanelTheme(localDark());
+
+  renderHero(s);
+  renderScreen(s);
+  renderTV(s);
+  renderSystem(s);
+  renderRecent(hist_(s));
+  renderSettings(s);
+  renderNet(s);
+  renderSignageForms(s);
+  renderCustom(s);
+  const mcOK = !!(s.caps && s.caps.miracast);
+  $("mc-start").disabled = !mcOK;
+  $("mc-note").textContent = mcOK ? "" : "disabled — needs the agent's -allow-miracast";
+  $("pw-shutdown").classList.toggle("hidden", !(s.caps && s.caps.shutdown));
+  $("raw").textContent = JSON.stringify(s, null, 2);
+}
+function hist_(s) { return (s.state && s.state.history) || []; }
+
+// ---- Now: Screen (sleep/wake + schedule) ----
+function renderScreen(s) {
+  const disp = s.display || {}, sc = disp.schedule || {};
+  const asleep = !!disp.asleep;
+  $("screen-tag").textContent = asleep ? "asleep" : "on";
+  $("screen-tag").style.color = asleep ? "var(--muted)" : "var(--ok)";
+  const sb = document.querySelector('#power [data-screen="false"]'), wb = document.querySelector('#power [data-screen="true"]');
+  if (sb) sb.classList.toggle("on", asleep); if (wb) wb.classList.toggle("on", !asleep);
+  if (sc.sleep && document.activeElement !== $("sched-sleep")) $("sched-sleep").value = sc.sleep;
+  if (sc.wake && document.activeElement !== $("sched-wake")) $("sched-wake").value = sc.wake;
+  $("sched-state").textContent = sc.enabled ? `on · ${sc.sleep}→${sc.wake}` : "off";
+}
+async function screenPower(on) { try { await api("POST", "/api/screen", { on }); toast(on ? "display on" : "display sleeping"); pollSnapshot(); } catch (e) { toast(e.message, true); } }
+document.querySelectorAll("#power button[data-screen]").forEach(b => b.onclick = () => screenPower(b.dataset.screen === "true"));
+async function saveSchedule(enabled) { try { await api("POST", "/api/schedule", { enabled, sleep: $("sched-sleep").value, wake: $("sched-wake").value }); toast(enabled ? "schedule enabled" : "disabled"); pollSnapshot(); } catch (e) { toast(e.message, true); } }
+$("sched-save").onclick = () => saveSchedule(true);
+$("sched-off").onclick = () => saveSchedule(false);
+
+// ---- Now: TV / CEC (only shown when detected) ----
+function renderTV(s) {
+  const cec = s.cec || {};
+  const card = $("tv-card");
+  if (!cec.available) { card.classList.add("hidden"); return; }
+  card.classList.remove("hidden");
+  $("tv-name").textContent = cec.tv_name || "";
+  $("tv-power").textContent = cec.power || "unknown";
+  $("tv-power").style.color = cec.power === "on" ? "var(--ok)" : cec.power === "standby" ? "var(--muted)" : "var(--fg)";
+  $("tv-vendor").textContent = cec.vendor || "—";
+}
+function cecAction(fn, label) { fn().then(() => { toast(label); setTimeout(pollSnapshot, 700); }).catch(e => toast(e.message, true)); }
+$("tv-on").onclick = () => cecAction(() => api("POST", "/api/screen", { on: true }), "TV on");
+$("tv-off").onclick = () => cecAction(() => api("POST", "/api/screen", { on: false }), "TV off");
+$("tv-source").onclick = () => cecAction(() => api("POST", "/api/cec", { action: "active-source" }), "switching input");
+document.querySelectorAll("button[data-cec]").forEach(b => b.onclick = () => cecAction(() => api("POST", "/api/cec", { action: b.dataset.cec }), b.dataset.cec));
+
+// ---- Now: System stats ----
+function pct(el, bar, v, hi) { $(el).textContent = v == null ? "—" : v + "%"; const i = $(bar); i.style.width = Math.max(0, Math.min(100, v || 0)) + "%"; i.className = v >= (hi || 90) ? "down" : v >= (hi ? hi - 15 : 75) ? "warn" : ""; }
+function renderSystem(s) {
+  const st = s.stats || {};
+  $("sys-model").textContent = st.model || "";
+  pct("cpu-v", "cpu-bar", st.cpu_percent, 90); $("cpu-v").textContent = (st.cpu_percent ?? "—") + "% · " + (st.cpu_count || "?") + "×";
+  const mem = st.mem || {}; pct("mem-v", "mem-bar", mem.percent, 90); $("mem-v").textContent = `${mem.used_mb || 0} / ${mem.total_mb || 0} MB`;
+  const disk = st.disk || {}; pct("disk-v", "disk-bar", disk.percent, 90); $("disk-v").textContent = `${disk.used_gb || 0} / ${disk.total_gb || 0} GB`;
+  const load = st.load || []; $("load-v").textContent = load.length ? load.map(x => x.toFixed(2)).join(" ") : "—";
+  $("temp-v").textContent = st.temp_c ? st.temp_c.toFixed(1) + "°C" : "—"; $("temp-s").classList.toggle("warn", st.temp_c >= 75);
+  $("up-v").textContent = fmtUptime(s.uptime_s || st.uptime_s);
+  $("res-v").textContent = st.resolution || "—"; $("cores-v").textContent = st.cpu_count || "—";
+  const thr = st.throttled, under = st.undervolt; let thrTxt = "—";
+  if (thr !== undefined && thr !== "") thrTxt = under ? "⚠ undervolt" : (thr === "0x0" ? "OK" : thr);
+  $("thr-v").textContent = thrTxt; $("thr-s").classList.toggle("warn", !!under);
+  renderUpgrades(st.upgrades || {});
+}
+function renderUpgrades(u) {
+  const line = $("upg-line"), run = $("upg-run"), check = $("upg-check"), log = $("upg-log");
+  if (!u.supported) { line.textContent = "apt not available"; run.disabled = check.disabled = true; return; }
+  if (u.upgrading) { line.textContent = "running apt-get upgrade…"; run.disabled = check.disabled = true; }
+  else if (u.checking) { line.textContent = "checking for upgrades…"; run.disabled = check.disabled = true; }
+  else {
+    run.disabled = check.disabled = false;
+    line.textContent = u.available > 0 ? `${u.available} upgrade${u.available === 1 ? "" : "s"} available` : "up to date";
+    run.disabled = u.available === 0 && u.last_result !== "failed";
+  }
+  if (u.log_tail) { log.classList.remove("hidden"); log.textContent = u.log_tail; } else log.classList.add("hidden");
+}
+$("upg-run").onclick = async () => { if (!confirm("Run apt-get upgrade now? This can take several minutes.")) return; try { renderUpgrades(await api("POST", "/api/upgrade")); toast("upgrade started"); } catch (e) { toast(e.message, true); } };
+$("upg-check").onclick = async () => { try { renderUpgrades(await api("POST", "/api/upgrade", { action: "check" })); toast("checking…"); } catch (e) { toast(e.message, true); } };
+
+// ---- Now: message + power ----
+$("msg-show").onclick = async () => { const text = $("msg-text").value, seconds = Math.max(0, parseInt($("msg-sec").value) || 0); if (!text) { toast("enter a message", true); return; } try { await api("POST", "/api/message", { text, seconds, position: $("msg-pos").value }); toast("message shown"); } catch (e) { toast(e.message, true); } };
+$("msg-clear").onclick = async () => { try { await api("POST", "/api/message", { clear: true }); toast("message cleared"); } catch (e) { toast(e.message, true); } };
+async function power(path, label) { try { await api("POST", path); toast(label); setTimeout(pollSnapshot, 700); } catch (e) { toast(e.message, true); } }
+$("pw-reboot").onclick = () => { if (confirm("Reboot this node now?")) power("/api/reboot", "rebooting…"); };
+$("pw-shutdown").onclick = () => { if (confirm("Shut down this node?\n\n⚠ It will NOT power back on by itself.")) power("/api/shutdown", "shutting down…"); };
+
+// ---- Library: recent ----
+function modeIcon(t) { return ({ web: "🌐", media: "🎬", airplay: "📱", moonlight: "🎮", app: "⚡", document: "📄" })[t] || "•"; }
+function renderRecent(hist) {
+  $("recent-count").textContent = hist.length ? `· ${hist.length}` : "";
+  const box = $("recent-list");
+  if (!hist.length) { box.innerHTML = '<div class="empty">nothing shown yet</div>'; return; }
+  box.innerHTML = "";
+  hist.forEach(it => {
+    const row = document.createElement("div"); row.className = "lrow";
+    const when = it.at ? new Date(it.at).toLocaleString() : "";
+    row.innerHTML = `<span class="ic">${modeIcon(it.type)}</span><div class="main"><div class="t"></div><div class="s">${it.type} · ${when}</div></div><div class="acts"><button class="show">Show</button><button class="del" title="remove">✕</button></div>`;
+    row.querySelector(".t").textContent = it.label || it.type;
+    row.querySelector(".show").onclick = () => doMode(it.mode);
+    row.querySelector(".del").onclick = async () => { try { await api("POST", "/api/history", { delete: it.id }); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+    box.appendChild(row);
+  });
+}
+$("recent-clear").onclick = async () => { if (!confirm("Clear the whole history?")) return; try { await api("POST", "/api/history", { clear: true }); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+
+// ---- Settings render ----
+function renderSettings(s) {
+  const st = s.stats || {}, disp = s.display || {};
+  $("set-node-name").textContent = s.node || "—";
+  $("set-node-tag").textContent = s.label || "";
+  const rot = disp.rotation || 0, zoom = disp.zoom_percent || 100;
+  $("zoom-val").textContent = zoom + "%";
+  document.querySelectorAll("#rotate button").forEach(b => b.classList.toggle("on", Number(b.dataset.deg) === rot));
+  $("set-disp-tag").textContent = (st.resolution || "") + (rot ? " · " + rot + "°" : "");
+  // memory cap
+  const mc = s.memory || {};
+  if (mc.supported) {
+    $("memcap-state").textContent = mc.capped ? "capped" : "off";
+    if (!String(document.activeElement && document.activeElement.id).startsWith("memcap-")) {
+      $("memcap-max").value = mc.capped && mc.max_mb ? mc.max_mb : ""; $("memcap-high").value = mc.high_mb || ""; $("memcap-swap").value = mc.swap_max_mb || "";
+    }
+  } else { $("memcap-state").textContent = "n/a"; $("memcap-body").innerHTML = '<p class="empty">Not supported on this node.</p>'; }
+  // plymouth
+  const p = s.plymouth || {};
+  const pt = $("ply-state");
+  if (!p.installed) { pt.textContent = "not installed"; pt.style.color = "var(--muted)"; } else { pt.textContent = p.enabled ? "on" : "off"; pt.style.color = p.enabled ? "var(--ok)" : "var(--muted)"; }
+  $("ply-on").classList.toggle("on", !!p.enabled); $("ply-off").classList.toggle("on", p.installed && !p.enabled);
+  if (document.activeElement !== $("ply-msg")) $("ply-msg").value = p.message || "";
+  $("ply-note").textContent = !p.installed ? "Plymouth isn't installed — run the deploy install step." : (p.note || "");
+  if (document.activeElement !== $("rl-min")) $("rl-min").value = (s.content && s.content.reload_min) || 0;
+  // miracast safety (mcfg — distinct from the memcap `mc` above in this scope)
+  const mcfg = s.miracast || {};
+  $("mc-set-tag").textContent = mcfg.allowed ? (mcfg.active ? "active" : "on") : "off";
+  $("mc-set-status").textContent = mcfg.allowed
+    ? ("Enabled." + (mcfg.active ? " Currently on screen." : ""))
+    : "Disabled — start the agent with -allow-miracast to enable the mode (the settings below still save for when you do).";
+  if (document.activeElement !== $("mc-iface")) $("mc-iface").value = mcfg.iface || "";
+  if (document.activeElement !== $("mc-max")) $("mc-max").value = mcfg.max_minutes != null ? mcfg.max_minutes : 30;
+  if (document.activeElement !== $("mc-abort")) $("mc-abort").value = mcfg.abort_after_s != null ? mcfg.abort_after_s : 30;
+}
+
+// keep signage forms synced (Library)
+function renderSignageForms(s) {
+  const c = s.content || {}, ss = s.slideshow || {}, d = s.document || {};
+  const pl = c.playlist || [];
+  $("pl2-state").textContent = c.enabled ? `· rotating ${pl.length} every ${c.interval_s}s` : "";
+  if (document.activeElement !== $("pl2-urls") && pl.length) $("pl2-urls").value = pl.join("\n");
+  if (document.activeElement !== $("pl2-interval") && c.interval_s) $("pl2-interval").value = c.interval_s;
+  $("ss-state").textContent = ss.enabled ? `running ${(ss.images || []).length}` : "";
+  if (document.activeElement !== $("ss-images") && (ss.images || []).length) $("ss-images").value = ss.images.join("\n");
+  if (ss.fit) $("ss-fit").value = ss.fit;
+  $("doc2-state").textContent = d.enabled ? (d.auto_advance_s > 0 ? `· auto ${d.auto_advance_s}s` : "· showing") : "";
+  if (document.activeElement !== $("doc2-src") && d.src) $("doc2-src").value = d.src;
+}
+
+// ---- snapshot poll ----
+async function pollSnapshot() { try { render(await api("GET", "/api/snapshot")); refreshShot(); } catch (e) { if (e.message !== "locked") $("nowline").textContent = "agent unreachable: " + e.message; } }
+
+// ---- screenshot ----
+let shotFails = 0;
+function refreshShot() {
+  const img = $("shot");
+  const probe = new Image();
+  probe.onload = () => { img.src = probe.src; img.style.display = "block"; $("shot-empty").style.display = "none"; shotFails = 0; };
+  probe.onerror = () => { shotFails++; if (shotFails > 1) { img.style.display = "none"; $("shot-empty").style.display = "block"; } };
+  probe.src = "/api/screenshot?w=640&t=" + Date.now();
+}
+
+// ---- mode launching ----
+async function doMode(mode) { if (busy) return; busy = true; try { await api("POST", "/api/mode", mode); toast("switched to " + mode.type); await pollSnapshot(); } catch (e) { toast(e.message, true); } finally { busy = false; } }
+const sheetNames = ["web", "playlist", "video", "document", "airplay", "moonlight", "steamlink", "miracast", "console", "custom"];
+document.querySelectorAll(".tile[data-launch]").forEach(t => t.onclick = () => {
+  const open = t.dataset.launch;
+  document.querySelectorAll(".tile[data-launch]").forEach(x => x.classList.toggle("sel", x === t));
+  sheetNames.forEach(name => $("sheet-" + name).classList.toggle("on", name === open));
+});
+$("web-go").onclick = () => { const u = $("web-url").value.trim(); if (u) doMode({ type: "web", params: { url: u }, display: curBackend }); };
+$("web-url").addEventListener("keydown", e => { if (e.key === "Enter") $("web-go").click(); });
+let plKind = "urls";
+document.querySelectorAll("#pl-kind button").forEach(b => b.onclick = () => { plKind = b.dataset.kind; document.querySelectorAll("#pl-kind button").forEach(x => x.classList.toggle("on", x === b)); $("pl-help").textContent = plKind === "urls" ? "One URL per line — the kiosk rotates through them." : "One http(s) image URL per line."; });
+$("pl-start").onclick = async () => {
+  const items = $("pl-items").value.split("\n").map(s => s.trim()).filter(Boolean);
+  const interval = Math.max(plKind === "urls" ? 5 : 1, parseInt($("pl-interval").value) || 30);
+  try { if (plKind === "urls") await api("POST", "/api/playlist", { urls: items, interval_s: interval, enabled: true }); else await api("POST", "/api/slideshow", { images: items, interval_s: interval, enabled: true }); toast("playlist started"); pollSnapshot(); } catch (e) { toast(e.message, true); }
+};
+$("pl-stop").onclick = async () => { try { if (plKind === "urls") await api("POST", "/api/playlist", { urls: [], enabled: false }); else await api("POST", "/api/slideshow", { images: [], enabled: false }); toast("stopped"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+$("vid-play").onclick = async () => {
+  const src = $("vid-src").value.trim(); if (!src) { toast("enter a media url or path", true); return; }
+  const body = { loop: $("vid-loop").checked, mute: $("vid-mute").checked };
+  if (/^https?:\/\/|^rtsp:\/\/|^rtmp:\/\/|^file:\/\//.test(src)) body.url = src; else body.path = src;
+  if (busy) return; busy = true;
+  try { await api("POST", "/api/media", body); toast("playing"); await pollSnapshot(); } catch (e) { toast(e.message, true); } finally { busy = false; }
+};
+async function setDocument(src, adv, enabled) {
+  if (enabled && !src) { toast("enter a document url or path", true); return; }
+  const body = { auto_advance_s: Math.max(0, parseInt(adv) || 0), enabled };
+  if (/^https?:\/\//.test(src)) body.url = src; else body.path = src;
+  try { await api("POST", "/api/document", body); toast(enabled ? "document shown" : "stopped"); pollSnapshot(); } catch (e) { toast(e.message, true); }
+}
+$("doc-show").onclick = () => setDocument($("doc-src").value.trim(), $("doc-adv").value, true);
+$("doc-stop").onclick = () => setDocument($("doc-src").value.trim(), $("doc-adv").value, false);
+$("doc2-show").onclick = () => setDocument($("doc2-src").value.trim(), $("doc2-adv").value, true);
+$("doc2-stop").onclick = () => setDocument($("doc2-src").value.trim(), $("doc2-adv").value, false);
+$("ap-start").onclick = () => doMode({ type: "airplay", display: $("ap-kms").checked ? "kms" : "compositor", params: { audio: $("ap-audio").checked } });
+$("ml-start").onclick = () => { const host = $("ml-host").value.trim(); doMode({ type: "moonlight", params: host ? { host } : {} }); };
+$("sl-start").onclick = () => doMode({ type: "steamlink" });
+$("mc-start").onclick = () => { if (!confirm("Start the EXPERIMENTAL Miracast sink?\n\nWi-Fi P2P can knock this node off its own network — you may lose remote control until it's stopped or rebooted. Continue?")) return; doMode({ type: "miracast" }); };
+function runConsole(cmd) { const argv = cmd.trim().split(/\s+/).filter(Boolean); if (argv.length) doMode({ type: "app", params: { argv }, display: "console" }); }
+$("con-run").onclick = () => runConsole($("con-cmd").value);
+document.querySelectorAll("#sheet-console button[data-con]").forEach(b => b.onclick = () => { $("con-cmd").value = b.dataset.con; runConsole(b.dataset.con); });
+$("cm-run").onclick = () => { const cmd = $("cm-cmd").value.trim(); if (!cmd) { toast("enter a program", true); return; } const args = $("cm-args").value.trim().split(/\s+/).filter(Boolean); doMode({ type: "app", display: $("cm-display").value, params: { argv: [cmd, ...args] } }); };
+
+// ---- Library playlists ----
+$("pl2-start").onclick = async () => { const urls = $("pl2-urls").value.split("\n").map(s => s.trim()).filter(Boolean); const interval_s = Math.max(5, parseInt($("pl2-interval").value) || 30); try { await api("POST", "/api/playlist", { urls, interval_s, enabled: true }); toast("rotation started"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+$("pl2-stop").onclick = async () => { try { await api("POST", "/api/playlist", { urls: [], enabled: false }); toast("stopped"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+$("ss-start").onclick = async () => { const images = $("ss-images").value.split("\n").map(s => s.trim()).filter(Boolean); const interval_s = Math.max(1, parseInt($("ss-interval").value) || 6); try { await api("POST", "/api/slideshow", { images, interval_s, fit: $("ss-fit").value, enabled: true }); toast("slideshow started"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+$("ss-stop").onclick = async () => { try { await api("POST", "/api/slideshow", { images: [], enabled: false }); toast("stopped"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+
+// ---- Settings: display + memcap + plymouth + reload ----
+async function rotate(deg) { try { await api("POST", "/api/rotate", { degrees: deg }); toast("rotated " + deg + "°"); pollSnapshot(); } catch (e) { toast(e.message, true); } }
+async function setZoom(p) { p = Math.max(25, Math.min(500, Math.round(p))); try { const d = await api("POST", "/api/zoom", { percent: p }); $("zoom-val").textContent = (d.zoom_percent || p) + "%"; toast("zoom " + (d.zoom_percent || p) + "%"); } catch (e) { toast(e.message, true); } }
+document.querySelectorAll("#rotate button[data-deg]").forEach(b => b.onclick = () => rotate(Number(b.dataset.deg)));
+document.querySelectorAll("#zoom button[data-zset]").forEach(b => b.onclick = () => setZoom(Number(b.dataset.zset)));
+document.querySelectorAll("#zoom button[data-zadd]").forEach(b => b.onclick = () => setZoom((snap?.display?.zoom_percent || 100) + Number(b.dataset.zadd)));
+async function pollOutputs() {
+  try {
+    const outs = await api("GET", "/api/outputs"); const panel = $("displays");
+    if (!outs || outs.length < 2) { panel.classList.add("hidden"); return; }
+    panel.classList.remove("hidden"); $("disp-count").textContent = `· ${outs.length} outputs`;
+    const layout = (snap && snap.display && snap.display.layout) || "single";
+    document.querySelectorAll("#layout button").forEach(b => b.classList.toggle("on", b.dataset.layout === layout));
+    const box = $("outputs"); if (box.contains(document.activeElement)) return; box.innerHTML = "";
+    outs.forEach(o => {
+      const el = document.createElement("div"); el.className = "lrow"; el.style.marginTop = "8px";
+      el.innerHTML = `<div class="main"><div class="t"></div><div class="s"></div></div><div class="acts"><button data-on="true">☀</button><button class="danger" data-on="false">😴</button></div>`;
+      el.querySelector(".t").textContent = o.name + (o.primary ? " (primary)" : ""); el.querySelector(".s").textContent = o.geometry || "";
+      el.querySelectorAll("[data-on]").forEach(b => b.onclick = async () => { try { await api("POST", "/api/screen", { output: o.name, on: b.dataset.on === "true" }); pollOutputs(); } catch (e) { toast(e.message, true); } });
+      box.appendChild(el);
+    });
+  } catch (e) {}
+}
+document.querySelectorAll("#layout button[data-layout]").forEach(b => b.onclick = async () => { try { await api("POST", "/api/layout", { mode: b.dataset.layout }); toast("layout: " + b.dataset.layout); pollOutputs(); } catch (e) { toast(e.message, true); } });
+$("memcap-apply").onclick = async () => { const body = { max_mb: parseInt($("memcap-max").value || "0", 10) || 0, high_mb: parseInt($("memcap-high").value || "0", 10) || 0, swap_max_mb: parseInt($("memcap-swap").value || "0", 10) || 0 }; try { await api("POST", "/api/memory", body); toast("memory cap applied"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+$("memcap-off").onclick = async () => { try { await api("POST", "/api/memory", { off: true }); toast("cap removed"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+$("ply-on").onclick = async () => { try { await api("POST", "/api/plymouth", { enabled: true }); toast("boot splash on (next boot)"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+$("ply-off").onclick = async () => { try { await api("POST", "/api/plymouth", { enabled: false }); toast("boot splash off (next boot)"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+$("ply-msg-save").onclick = async () => { const message = $("ply-msg").value.trim(); if (!message) { toast("enter a message", true); return; } toast("saving (rebuilding initramfs)…"); try { await api("POST", "/api/plymouth", { message }); toast("splash message saved"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+$("rl-set").onclick = async () => { const minutes = Math.max(0, parseInt($("rl-min").value) || 0); try { await api("POST", "/api/reload", { minutes }); toast(minutes ? `reload every ${minutes}m` : "auto-reload off"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+$("rl-now").onclick = async () => { try { await api("POST", "/api/reload", { now: true }); toast("reloaded"); } catch (e) { toast(e.message, true); } };
+$("mc-save").onclick = async () => { const body = { iface: $("mc-iface").value.trim(), max_minutes: Math.max(0, parseInt($("mc-max").value) || 0), abort_after_s: Math.max(0, parseInt($("mc-abort").value) || 0) }; try { await api("POST", "/api/miracast", body); toast("Miracast settings saved"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+
+// ---- Settings: Node rename + Network / Wi-Fi ----
+let wifiLoaded = false;
+function renderNet(s) {
+  const net = s.net || {};
+  const hn = $("host-name"), note = $("host-note"), save = $("host-save");
+  if (document.activeElement !== hn) hn.placeholder = "e.g. " + (net.suggested || "lobby-screen");
+  if (net.protected) {
+    hn.disabled = save.disabled = true;
+    note.innerHTML = "This hostname is <b>load-bearing</b> in the deploy convention — rename it over ssh if you must.";
+  } else if (net.can_rename === false) {
+    hn.disabled = save.disabled = true;
+    note.textContent = "hostnamectl is not available on this node.";
+  } else {
+    hn.disabled = save.disabled = false;
+    note.textContent = "Lowercase letters, digits, and hyphens (1–63 chars). Takes effect immediately.";
+  }
+  $("wifi-tag").textContent = (net.wifi && net.wifi.supported) ? "" : "n/a";
+}
+$("host-save").onclick = async () => {
+  const name = $("host-name").value.trim();
+  if (!name) { toast("enter a name", true); return; }
+  try { const info = await api("POST", "/api/hostname", { name }); toast("renamed to " + info.hostname); $("host-name").value = ""; pollSnapshot(); }
+  catch (e) { toast(e.message, true); }
+};
+async function loadWifi() {
+  $("wifi-status").textContent = "scanning…";
+  try { renderWifi(await api("GET", "/api/wifi")); }
+  catch (e) { $("wifi-status").textContent = ""; $("wifi-note").textContent = e.message; }
+}
+function renderWifi(w) {
+  const box = $("wifi-list"), status = $("wifi-status"), note = $("wifi-note");
+  if (!w.supported) { box.innerHTML = ""; status.textContent = ""; note.textContent = w.note || "Wi-Fi management needs NetworkManager (nmcli) and a wireless device."; return; }
+  status.textContent = w.active ? ("connected · " + w.active) : (w.radio === "disabled" ? "Wi-Fi radio off" : "not connected");
+  note.textContent = w.note || "";
+  box.innerHTML = "";
+  const nets = w.networks || [];
+  if (!nets.length) { box.innerHTML = '<div class="empty">no networks found</div>'; return; }
+  nets.forEach(nw => {
+    const row = document.createElement("div"); row.className = "lrow";
+    const badges = [nw.active ? "connected" : "", nw.saved ? "saved" : ""].filter(Boolean).join(" · ");
+    const sub = [nw.signal ? nw.signal + "%" : "", nw.security || "open", badges].filter(Boolean).join(" · ");
+    row.innerHTML = '<span class="ic">' + (nw.security ? "🔒" : "📶") + '</span><div class="main"><div class="t"></div><div class="s"></div></div><div class="acts"></div>';
+    row.querySelector(".t").textContent = nw.ssid;
+    row.querySelector(".s").textContent = sub;
+    const acts = row.querySelector(".acts");
+    if (!nw.active) {
+      const b = document.createElement("button"); b.textContent = "Connect";
+      b.onclick = () => wifiConnect(nw); acts.appendChild(b);
+    }
+    if (nw.saved) {
+      const f = document.createElement("button"); f.className = "danger"; f.textContent = "Forget"; f.title = "delete saved network";
+      f.onclick = () => wifiForget(nw.ssid); acts.appendChild(f);
+    }
+    box.appendChild(row);
+  });
+}
+async function wifiConnect(nw) {
+  let psk = "";
+  if (nw.security && !nw.saved) { psk = prompt("Password for “" + nw.ssid + "”:", ""); if (psk === null) return; }
+  try { toast("connecting to " + nw.ssid + "…"); renderWifi(await api("POST", "/api/wifi", { ssid: nw.ssid, psk })); toast("connected to " + nw.ssid); pollSnapshot(); }
+  catch (e) { toast(e.message, true); }
+}
+async function wifiForget(ssid) {
+  if (!confirm("Forget saved network “" + ssid + "”?")) return;
+  try { renderWifi(await api("POST", "/api/wifi/delete", { ssid })); toast("forgot " + ssid); }
+  catch (e) { toast(e.message, true); }
+}
+$("wifi-scan").onclick = loadWifi;
+$("wifi-sect").addEventListener("toggle", (e) => { if (e.target.open && !wifiLoaded) { wifiLoaded = true; loadWifi(); } });
+
+// ---- Advanced: logs ----
+async function refreshLogs() { try { const r = await fetch("/api/logs?tail=200"); if (r.status === 401) { showLogin(); return; } const t = await r.text(); $("logs").textContent = t; $("logs").scrollTop = $("logs").scrollHeight; } catch (e) {} }
+$("logs-refresh").onclick = refreshLogs;
+
+// ============ Library: Media file manager ============
+let curMediaPath = "", mplItems = [], lastCmJson = "";
+function kindIcon(k) { return ({ dir: "📁", image: "🖼", video: "🎬", audio: "🎵", doc: "📄" })[k] || "📎"; }
+function fmtBytes(n) { if (!n) return ""; const u = ["B", "KB", "MB", "GB"]; let i = 0; while (n >= 1024 && i < 3) { n /= 1024; i++; } return n.toFixed(i ? 1 : 0) + " " + u[i]; }
+function mediaRel(path, name) { return (path ? path + "/" : "") + name; }
+function mediaURL(rel) { return "/media/" + rel.split("/").map(encodeURIComponent).join("/"); }
+
+async function loadMedia(path) {
+  curMediaPath = path || "";
+  try { renderMedia(await api("GET", "/api/library?path=" + encodeURIComponent(curMediaPath))); }
+  catch (e) { $("media-list").innerHTML = '<div class="empty">' + (e.message === "locked" ? "locked" : "media library unavailable — set -media-dir") + '</div>'; }
+}
+function renderMedia(d) {
+  const cr = $("media-crumbs"); cr.innerHTML = "";
+  const crumb = (label, p) => { const a = document.createElement("button"); a.className = "chip"; a.textContent = label; a.onclick = () => loadMedia(p); cr.appendChild(a); };
+  crumb("media", "");
+  let acc = ""; (d.path ? d.path.split("/") : []).forEach(seg => { acc = acc ? acc + "/" + seg : seg; crumb(seg, acc); });
+  const box = $("media-list"); box.innerHTML = "";
+  if (!d.entries.length) { box.innerHTML = '<div class="empty">empty folder — upload something</div>'; return; }
+  d.entries.forEach(e => {
+    const rel = mediaRel(d.path, e.name);
+    const row = document.createElement("div"); row.className = "lrow";
+    row.innerHTML = `<span class="ic">${kindIcon(e.kind)}</span><div class="main"><div class="t"></div><div class="s">${e.is_dir ? "folder" : e.kind + " · " + fmtBytes(e.size)}</div></div><div class="acts"></div>`;
+    row.querySelector(".t").textContent = e.name;
+    const acts = row.querySelector(".acts");
+    const btn = (label, title, fn) => { const b = document.createElement("button"); b.textContent = label; b.title = title; b.style.padding = "4px 8px"; b.onclick = fn; acts.appendChild(b); };
+    if (e.is_dir) { const main = row.querySelector(".main"); main.style.cursor = "pointer"; main.onclick = () => loadMedia(rel); }
+    else {
+      btn("👁", "preview", () => window.open(mediaURL(rel), "_blank", "noopener"));
+      if (e.kind !== "other") btn("⊕", "add to media playlist", () => { mplItems.push({ kind: e.kind, src: rel, title: e.name }); toast("added to playlist"); });
+    }
+    btn("✎", "rename", () => renameMedia(rel, e.name));
+    btn("✕", "delete", () => deleteMedia(rel));
+    box.appendChild(row);
+  });
+}
+$("media-upload").onchange = async (ev) => {
+  const files = [...ev.target.files]; if (!files.length) return;
+  const fd = new FormData(); files.forEach(f => fd.append("file", f));
+  toast("uploading " + files.length + " file(s)…");
+  try {
+    const r = await fetch("/api/library/upload?path=" + encodeURIComponent(curMediaPath), { method: "POST", body: fd });
+    if (r.status === 401) { showLogin(); return; }
+    const d = await r.json(); if (!r.ok) throw new Error(d.error || "upload failed");
+    toast("uploaded " + d.saved.length); ev.target.value = ""; renderMedia(d.listing);
+  } catch (e) { toast(e.message, true); }
+};
+$("media-mkdir").onclick = async () => { const name = prompt("New folder name:"); if (!name) return; try { renderMedia((await api("POST", "/api/library/mkdir", { path: curMediaPath, name })).listing); } catch (e) { toast(e.message, true); } };
+async function renameMedia(rel, oldName) {
+  const nn = prompt("Rename to:", oldName); if (!nn || nn === oldName) return;
+  const parent = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+  try { await api("POST", "/api/library/rename", { from: rel, to: (parent ? parent + "/" : "") + nn }); loadMedia(curMediaPath); } catch (e) { toast(e.message, true); }
+}
+async function deleteMedia(rel) {
+  if (!confirm("Delete " + rel + "?")) return;
+  try { await api("POST", "/api/library/delete", { path: rel, recursive: false }); loadMedia(curMediaPath); }
+  catch (e) {
+    if (/not empty/i.test(e.message)) { if (confirm("Folder isn't empty. Delete it and everything inside?")) { try { await api("POST", "/api/library/delete", { path: rel, recursive: true }); loadMedia(curMediaPath); } catch (e2) { toast(e2.message, true); } } }
+    else toast(e.message, true);
+  }
+}
+
+// ============ Library: Media playlist builder ============
+async function loadPlaylist() {
+  // Load the saved playlist only when the working list is empty, so items added
+  // from Media (⊕) aren't clobbered when the operator switches to this tab.
+  if (mplItems.length === 0) {
+    try { const d = await api("GET", "/api/playlist-media"); mplItems = d.items || []; $("mpl-interval").value = d.interval_s || 8; $("mpl-loop").checked = d.loop !== false; $("mpl-shuffle").checked = !!d.shuffle; $("mpl-trans").value = d.transition || "fade"; } catch (e) {}
+  }
+  renderPlaylistItems();
+}
+function renderPlaylistItems() {
+  $("mpl-count").textContent = mplItems.length ? "· " + mplItems.length + " items" : "";
+  const box = $("mpl-items");
+  if (!mplItems.length) { box.innerHTML = '<div class="empty">no items — add from Media (⊕) or a URL below</div>'; return; }
+  box.innerHTML = "";
+  mplItems.forEach((it, i) => {
+    const row = document.createElement("div"); row.className = "lrow";
+    row.innerHTML = `<span class="ic">${kindIcon(it.kind)}</span><div class="main"><div class="t"></div><div class="s">${it.kind}</div></div><div class="acts"></div>`;
+    row.querySelector(".t").textContent = it.title || it.src;
+    const acts = row.querySelector(".acts");
+    const btn = (l, fn, dis) => { const b = document.createElement("button"); b.textContent = l; b.style.padding = "4px 8px"; if (dis) b.disabled = true; b.onclick = fn; acts.appendChild(b); };
+    btn("↑", () => { [mplItems[i - 1], mplItems[i]] = [mplItems[i], mplItems[i - 1]]; renderPlaylistItems(); }, i === 0);
+    btn("↓", () => { [mplItems[i + 1], mplItems[i]] = [mplItems[i], mplItems[i + 1]]; renderPlaylistItems(); }, i === mplItems.length - 1);
+    btn("✕", () => { mplItems.splice(i, 1); renderPlaylistItems(); });
+    box.appendChild(row);
+  });
+}
+$("mpl-add").onclick = () => { const url = $("mpl-add-url").value.trim(); if (!url) { toast("enter a media URL", true); return; } mplItems.push({ kind: $("mpl-add-kind").value, src: url }); $("mpl-add-url").value = ""; renderPlaylistItems(); };
+function mplBody(play) { return { items: mplItems, interval_s: Math.max(1, parseInt($("mpl-interval").value) || 8), loop: $("mpl-loop").checked, shuffle: $("mpl-shuffle").checked, transition: $("mpl-trans").value, play }; }
+$("mpl-save").onclick = async () => { try { const d = await api("POST", "/api/playlist-media", mplBody(false)); mplItems = d.items || []; renderPlaylistItems(); toast("playlist saved (" + mplItems.length + ")"); } catch (e) { toast(e.message, true); } };
+$("mpl-play").onclick = async () => { if (!mplItems.length) { toast("add some items first", true); return; } try { await api("POST", "/api/playlist-media", mplBody(true)); toast("playing media playlist"); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+
+// ============ Library: Custom modes ============
+function renderCustom(s, force) {
+  const cms = (s && s.state && s.state.custom_modes) || [];
+  const j = JSON.stringify(cms);
+  if (!force && j === lastCmJson) return; // don't rebuild (avoids click-flicker) unless changed
+  lastCmJson = j;
+  $("cm-count").textContent = cms.length ? "· " + cms.length : "";
+  const box = $("cm-list");
+  if (!cms.length) { box.innerHTML = '<div class="empty">no saved custom modes</div>'; return; }
+  box.innerHTML = "";
+  cms.forEach(cm => {
+    const row = document.createElement("div"); row.className = "lrow";
+    row.innerHTML = `<span class="ic">⚡</span><div class="main"><div class="t"></div><div class="s"></div></div><div class="acts"><button class="pl">▶ Launch</button><button class="ed">Edit</button><button class="dl">✕</button></div>`;
+    row.querySelector(".t").textContent = cm.name;
+    row.querySelector(".s").textContent = cm.command + ((cm.args || []).length ? " " + cm.args.join(" ") : "") + " · " + cm.display;
+    row.querySelector(".pl").onclick = async () => { try { await api("POST", "/api/custom/launch", { id: cm.id }); toast("launched " + cm.name); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+    row.querySelector(".ed").onclick = () => { $("cmn-id").value = cm.id; $("cmn-name").value = cm.name; $("cmn-cmd").value = cm.command; $("cmn-args").value = (cm.args || []).join(" "); $("cmn-display").value = cm.display; };
+    row.querySelector(".dl").onclick = async () => { if (!confirm("Delete " + cm.name + "?")) return; try { await api("POST", "/api/custom/delete", { id: cm.id }); pollSnapshot(); } catch (e) { toast(e.message, true); } };
+    box.appendChild(row);
+  });
+}
+function clearCmForm() { ["cmn-id", "cmn-name", "cmn-cmd", "cmn-args"].forEach(id => $(id).value = ""); $("cmn-display").value = "compositor"; }
+$("cmn-clear").onclick = clearCmForm;
+$("cmn-save").onclick = async () => {
+  const name = $("cmn-name").value.trim(), command = $("cmn-cmd").value.trim();
+  if (!name || !command) { toast("name and command are required", true); return; }
+  const args = $("cmn-args").value.trim().split(/\s+/).filter(Boolean);
+  const body = { name, command, args, display: $("cmn-display").value };
+  if ($("cmn-id").value) body.id = $("cmn-id").value;
+  try { await api("POST", "/api/custom", body); toast("custom mode saved"); clearCmForm(); pollSnapshot(); } catch (e) { toast(e.message, true); }
+};
+
+// ---- boot ----
+applyPanelTheme(localDark());
+pollSnapshot();
+refreshLogs();
+setInterval(pollSnapshot, 3000);
+setInterval(pollOutputs, 11000);
+</script>
+</body>
+</html>
