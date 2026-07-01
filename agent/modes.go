@@ -49,6 +49,23 @@ func (m *Mode) foreground() bool {
 	return m.Display == DisplayConsole || m.Display == DisplayKMS
 }
 
+// retiresWhenDone reports whether a FOREGROUND mode is finite/interactive — one
+// that has "finished" when its child ends, so the supervisor should return the
+// screen to the compositor base rather than keep it alive with restart-on-exit.
+// True for an app (a console app the operator quit, e.g. htop; or a one-shot KMS
+// program) and media (mpv playing a file to the end). False for surfaces meant to
+// stay up: streaming receivers (airplay/moonlight/steamlink/miracast, which keep
+// listening) and the cog web kiosk (a persistent URL surface, like the X/Wayland
+// web kiosk). Only meaningful for foreground() modes; see modeRunner.runLoop for
+// the clean-exit-vs-crash distinction it drives.
+func (m *Mode) retiresWhenDone() bool {
+	switch m.Type {
+	case ModeApp, ModeMedia:
+		return true
+	}
+	return false
+}
+
 // runsAsRoot reports whether this mode's child must run as root rather than the
 // seat user. Direct-KMS modes need DRM master on the mode VT (a priv-dropped
 // child not in a logind session on that VT can't SET_MASTER); the legacy

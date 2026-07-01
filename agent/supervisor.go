@@ -54,6 +54,7 @@ type Supervisor struct {
 	cfg      *Config
 	chrome   *Chrome   // CDP controller for the X/Wayland Chromium kiosk
 	miracast *Miracast // wired post-construction; supplies the P2P interface to pin
+	onSettle func()    // wired post-construction; re-records the on-screen mode after an unattended return-to-base (recover*), so the persisted "active" matches the screen
 
 	mu        sync.Mutex  // guards runner/fgRunner/switching
 	runner    *modeRunner // compositor surface
@@ -69,6 +70,21 @@ func NewSupervisor(cfg *Config) *Supervisor {
 // SetMiracast wires the miracast manager (post-construction) so childEnv can pin
 // the P2P sink to the operator-chosen interface.
 func (s *Supervisor) SetMiracast(m *Miracast) { s.miracast = m }
+
+// SetOnSettle wires a callback fired after an unattended return-to-base (a
+// foreground mode retiring/crashing, or a Wayland primary recovering) has put
+// the compositor surface back on screen — so the persisted "active" mode can be
+// re-synced to what is actually showing. Set once at startup, before any runner
+// starts; read-only thereafter (same pattern as SetMiracast).
+func (s *Supervisor) SetOnSettle(fn func()) { s.onSettle = fn }
+
+// settled runs the post-recovery hook (if wired) after the screen is back on the
+// compositor base. Called with s.mu released — onSettle re-reads Status().
+func (s *Supervisor) settled() {
+	if s.onSettle != nil {
+		s.onSettle()
+	}
+}
 
 // cogBusAddr is the fixed address of the private D-Bus session bus the agent runs
 // for the cog kiosk, so cog (the launch) and cogctl (control) share one bus
@@ -194,8 +210,13 @@ func (s *Supervisor) switchForeground(m Mode, fg *modeRunner) error {
 		s.mu.Unlock()
 		fg.Stop()
 	}
+	// Capture the compositor base's mode now: a KMS foreground mode tears it down
+	// (stopSuspendedBaseForKMS), so when this mode ends recoverForeground must
+	// relaunch that exact base rather than chvt to a dead VT. A console mode keeps
+	// the base alive, so baseMode is unused in that path.
+	baseMode := s.currentBaseMode()
 	r := newModeRunner(s, m)
-	r.onTerminal = func() { s.recoverForeground(r) } // crash → return to compositor VT
+	r.onTerminal = func() { s.recoverForeground(r, baseMode) } // ended → return to the compositor base
 
 	// cog (web+kms) must own DRM master, which only frees once the mode VT is the
 	// active console — so switch the VT BEFORE launching cog. cog also needs its
@@ -264,21 +285,85 @@ func (s *Supervisor) stopSuspendedBaseForKMS(m Mode) {
 	}
 }
 
-// recoverForeground returns the screen to the compositor VT after a foreground
-// runner failed on its own, but only if it is still the installed foreground
-// surface (a concurrent Switch may already own the screen).
-func (s *Supervisor) recoverForeground(r *modeRunner) {
+// recoverForeground returns the screen to the compositor base after a foreground
+// runner ended on its own — a crash-loop give-up, or a retired console/player mode
+// the operator quit or that finished (the retire path). Like recoverPrimary it
+// claims the switch token so its chvt/relaunch can't race a concurrent operator
+// Switch (which would otherwise start a fresh foreground mode on the mode VT while
+// this call moves away from it, stranding the screen on the wrong VT); a Switch
+// racing this gets 409 and can retry. Skips (a switch already owns, or will own,
+// the screen) unless this is still the installed foreground surface.
+//
+// A console mode layers over a still-alive base, so returning is just a chvt. A
+// KMS mode is a full-screen takeover that tore the base down (stopSuspendedBaseForKMS),
+// so recoverForeground must RELAUNCH the base (baseMode, captured at switch time)
+// or the screen would land on a dead VT with no compositor.
+func (s *Supervisor) recoverForeground(r *modeRunner, baseMode Mode) {
 	s.mu.Lock()
-	current := s.fgRunner == r
-	if current {
-		s.fgRunner = nil
+	if s.switching || s.fgRunner != r {
+		s.mu.Unlock() // a switch owns (or will own) the screen — let it
+		return
 	}
+	s.switching = true
+	s.fgRunner = nil
+	hasBase := s.runner != nil
 	s.mu.Unlock()
-	if current {
-		vt := s.baseVT()
-		log.Printf("foreground mode failed; returning screen to compositor VT %d", vt)
-		_ = s.activateVT(vt)
+	defer func() {
+		s.mu.Lock()
+		s.switching = false
+		s.mu.Unlock()
+	}()
+
+	if !hasBase {
+		s.restoreBase(baseMode) // a KMS takeover freed the base — bring it back, not a blank VT
+		s.settled()
+		return
 	}
+	vt := s.baseVT()
+	log.Printf("foreground mode ended; returning screen to compositor VT %d", vt)
+	_ = s.activateVT(vt)
+	s.settled() // persist the restored base so a reboot doesn't relaunch the retired mode
+}
+
+// currentBaseMode returns the compositor base's mode, or the zero Mode when no
+// base is installed. Captured before a KMS foreground mode tears the base down,
+// so recoverForeground can relaunch exactly that surface (X or Wayland).
+func (s *Supervisor) currentBaseMode() Mode {
+	s.mu.Lock()
+	base := s.runner
+	s.mu.Unlock()
+	if base == nil {
+		return Mode{}
+	}
+	return base.currentMode()
+}
+
+// restoreBase returns the screen to the compositor surface a KMS foreground mode
+// tore down (a full-screen takeover frees the base via stopSuspendedBaseForKMS).
+// The caller MUST hold the switch token (recoverForeground does), which
+// startPrimary requires.
+//
+//   - There WAS a base (baseMode set): relaunch exactly it (X or Wayland, via
+//     startPrimary); if that fails, fall back to the default web kiosk so a node
+//     that was showing web content doesn't strand on a blank VT.
+//   - There was NO base (baseMode is the zero Mode, or off): the node is
+//     configured console/KMS/off-only — do NOT conjure a web kiosk it was never
+//     meant to show (and never had). Return the screen to the idle compositor VT;
+//     Status() then reports off, which settled() persists.
+func (s *Supervisor) restoreBase(baseMode Mode) {
+	if baseMode.Type == "" || baseMode.Type == ModeOff {
+		s.chrome.Detach()
+		_ = s.activateVT(s.cfg.XVT) // idle X root, not a kiosk — matches a base-less node's config
+		return
+	}
+	if err := s.startPrimary(baseMode, nil); err == nil {
+		return
+	} else {
+		log.Printf("[recover] could not relaunch the base %s a KMS mode had hidden: %v; falling back to the default kiosk", baseMode.label(), err)
+	}
+	_ = s.activateVT(s.cfg.XVT)
+	s.chrome.Target(s.cfg.CDPPort)
+	s.restoreWebKiosk("", true)
 }
 
 // switchCompositor brings up a primary surface — the X11 web/app base, the
@@ -428,6 +513,7 @@ func (s *Supervisor) recoverPrimary(r *modeRunner, url string, dark bool) {
 	s.chrome.Target(s.cfg.CDPPort)
 	_ = s.activateVT(s.cfg.XVT)
 	s.restoreWebKiosk(url, dark)
+	s.settled() // persist the restored X kiosk so a reboot doesn't relaunch the dead Wayland primary
 }
 
 // restoreWebKiosk best-effort brings the default X11 web kiosk back after a
@@ -905,10 +991,12 @@ type modeRunner struct {
 	done     chan struct{}
 	doneOnce sync.Once
 
-	// onTerminal, if set, runs when the runLoop exits in the failed state (an
-	// unattended crash-loop give-up — NOT an intentional Stop). Foreground
-	// runners use it to return the screen to the compositor VT so a console/kms
-	// crash can't strand the only screen on a dead VT.
+	// onTerminal, if set, runs when the runLoop reaches a terminal state on its
+	// own — a crash-loop give-up (state==failed) or a foreground console mode
+	// whose child exited (the operator quit it) — but NOT on an intentional Stop.
+	// Foreground runners use it to return the screen to the compositor VT so a
+	// console app quitting (or a console/kms crash) can't strand the only screen
+	// on the mode VT.
 	onTerminal func()
 
 	mu        sync.Mutex
@@ -966,15 +1054,21 @@ func (r *modeRunner) start() error {
 // runLoop waits on the child and restarts it on unexpected exit, until Stop()
 // cancels the context or the failure burst is exceeded.
 func (r *modeRunner) runLoop() {
+	// retire is set when a foreground console mode's child exits on its own (the
+	// operator quit the TTY app, or it died) — the runner is done and the screen
+	// must go back to the compositor base, exactly like a crash-loop give-up. It
+	// funnels through onTerminal so the return-to-base logic lives in one place.
+	var retire bool
 	defer func() {
 		r.closeDone()
-		// On an unattended terminal failure (state==failed, never reached on the
-		// intentional-stop paths), run the recovery hook — for foreground runners
-		// this returns the screen to the compositor VT.
+		// On a terminal exit the runner reached on its own — an unattended failure
+		// (state==failed) or a retired console mode — run the recovery hook; for
+		// foreground runners it returns the screen to the compositor VT. Never
+		// reached on the intentional-stop paths (they return before setting these).
 		r.mu.Lock()
 		failed := r.state == stateFailed
 		r.mu.Unlock()
-		if failed && r.onTerminal != nil {
+		if (failed || retire) && r.onTerminal != nil {
 			r.onTerminal()
 		}
 	}()
@@ -1007,6 +1101,23 @@ func (r *modeRunner) runLoop() {
 
 		if r.ctx.Err() != nil { // intentional stop — do not respawn
 			r.setState(stateStopped, "")
+			return
+		}
+
+		// A foreground mode that ends on its own may be DONE, not crashed —
+		// respawning a finished mode pins the screen to the mode VT forever (the
+		// "htop won't return to the kiosk" bug and its KMS-player twin). Retire it
+		// and let onTerminal hand the screen back to the compositor base:
+		//   - a console app (htop, a shell): the operator quit it — done on ANY exit.
+		//   - a one-shot KMS player/app (mpv of a finite file, a custom KMS program):
+		//     done on a CLEAN exit (code 0); a non-zero exit is a crash → keep
+		//     restart-on-exit (a transient failure retries, then gives up → base).
+		// Streaming receivers (airplay/moonlight/steamlink/miracast) and the cog web
+		// kiosk stay up via restart-on-exit — they never retire (see retiresWhenDone).
+		if r.mode.foreground() && r.mode.retiresWhenDone() && (r.mode.Display == DisplayConsole || err == nil) {
+			log.Printf("[mode %s] foreground mode exited (%s); returning the screen to the compositor base", r.mode.label(), exitReason(err))
+			r.setState(stateStopped, "")
+			retire = true
 			return
 		}
 

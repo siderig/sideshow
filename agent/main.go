@@ -218,6 +218,10 @@ func main() {
 	display.SetContent(content)
 	content.SetDisplay(display)
 	srv := NewServer(cfg, sup, stats, apt, cec, vnc, display, power, content, plymouth, state, library, playlist, miracast, netmgr, setup)
+	// After an unattended return-to-base (a console mode the operator quit, or a
+	// crash recovery), re-record what's now on screen so the persisted "active"
+	// matches the screen — else a reboot would relaunch the retired mode.
+	sup.SetOnSettle(srv.recordActive)
 	apt.Start()
 	stats.Start()
 	cec.Start()
