@@ -1,0 +1,78 @@
+# debos recipe — a bootable Debian amd64 sideshow appliance image (UEFI).
+#
+#   debos agent/images/debian-amd64.yaml            # → sideshow-debian-amd64.img
+#   debos -t suite:trixie -t image:foo.img …        # override defaults
+#
+# UEFI-only (installs GRUB to the removable EFI path EFI/BOOT/BOOTX64.EFI, so it
+# boots on any UEFI machine without an nvram entry). Legacy-BIOS boot is NOT
+# covered — most x86 mini-PCs are UEFI. The `overlay/` dir (staged by CI with
+# opt/sideshow-src/{agent,dist/sideshow-agent-amd64}) carries the sources; the
+# shared agent/scripts/image-provision.sh does the actual provisioning.
+#
+# NOTE: this bootable-x86-image path is the least-exercised; expect to shake it
+# out on the first CI run (bootloader/partition specifics vary). The Raspberry Pi
+# image path is the well-trodden one.
+{{- $suite := or .suite "bookworm" -}}
+{{- $image := or .image "sideshow-debian-amd64.img" -}}
+architecture: amd64
+
+actions:
+  - action: debootstrap
+    suite: {{ $suite }}
+    components: [main, contrib, non-free-firmware]
+    mirror: https://deb.debian.org/debian
+    variant: minbase
+
+  - action: apt
+    description: base OS — kernel, init, UEFI bootloader, firmware
+    recommends: false
+    packages:
+      - linux-image-amd64
+      - systemd-sysv
+      - grub-efi-amd64
+      - efibootmgr
+      - firmware-linux           # incl. nonfree GPU firmware (Intel/AMD) for the Wayland/GLES path
+      - ca-certificates
+      - locales
+
+  - action: overlay
+    description: sideshow sources → /opt/sideshow-src
+    source: overlay
+
+  - action: run
+    description: provision sideshow (deps, agent, kmsshot, unit, first-boot key)
+    chroot: true
+    command: COMPOSITOR=wayland SEATUSER=sideshow AGENT_BIN=/opt/sideshow-src/dist/sideshow-agent-amd64 SRC_DIR=/opt/sideshow-src/agent sh /opt/sideshow-src/agent/scripts/image-provision.sh
+
+  - action: run
+    description: hostname + locale + cleanup
+    chroot: true
+    script: debian-finalize.sh
+
+  - action: image-partition
+    imagename: {{ $image }}
+    imagesize: 4GB
+    partitiontype: gpt
+    mountpoints:
+      - mountpoint: /
+        partition: root
+      - mountpoint: /boot/efi
+        partition: efi
+    partitions:
+      - name: efi
+        fs: vfat
+        start: 4MiB
+        end: 260MiB
+        flags: [esp]
+      - name: root
+        fs: ext4
+        start: 260MiB
+        end: 100%
+
+  - action: filesystem-deploy
+    description: deploy the rootfs into the image (writes /etc/fstab from mountpoints)
+
+  - action: run
+    description: install GRUB to the removable EFI path
+    chroot: true
+    command: grub-install --target=x86_64-efi --efi-directory=/boot/efi --removable --no-nvram && update-grub

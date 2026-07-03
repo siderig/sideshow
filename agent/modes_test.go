@@ -77,8 +77,10 @@ func TestAppWaylandMode(t *testing.T) {
 	if len(args) < 5 || args[0] != "-c" || args[2] != "sh" {
 		t.Fatalf("args = %v, want [-c <launcher> sh argv...]", args)
 	}
-	if !strings.Contains(args[1], "labwc -s") {
-		t.Errorf("launcher does not run labwc: %q", args[1])
+	// labwc runs the startup wrapper; an optional `-C <dir>` (only under
+	// -lock-input, absent here) may sit between the binary and -s.
+	if !strings.Contains(args[1], "labwc ") || !strings.Contains(args[1], `-s "$WRAP"`) {
+		t.Errorf("launcher does not run labwc with the startup wrapper: %q", args[1])
 	}
 	if args[3] != "/usr/bin/myapp" || args[4] != "--flag" {
 		t.Errorf("app argv not passed through: %v", args[3:])

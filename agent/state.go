@@ -31,6 +31,7 @@ type State struct {
 	setupComplete bool
 	history       []HistoryItem
 	customModes   []CustomMode
+	localInput    *bool // node-global: does the local keyboard/mouse drive the kiosk? (nil = unset → default)
 
 	saveMu sync.Mutex // serializes save() so concurrent writers can't tear the file
 }
@@ -86,6 +87,7 @@ type persistedState struct {
 	SetupComplete bool          `json:"setup_complete"`
 	History       []HistoryItem `json:"history,omitempty"`
 	CustomModes   []CustomMode  `json:"custom_modes,omitempty"`
+	LocalInput    *bool         `json:"local_input,omitempty"`
 }
 
 // maxHistory bounds the remembered-shows list (most-recent first).
@@ -116,6 +118,7 @@ func (s *State) load() {
 	s.setupComplete = p.SetupComplete
 	s.history = p.History
 	s.customModes = p.CustomModes
+	s.localInput = p.LocalInput
 }
 
 func (s *State) save() {
@@ -130,6 +133,7 @@ func (s *State) save() {
 		SetupComplete: s.setupComplete,
 		History:       append([]HistoryItem(nil), s.history...),
 		CustomModes:   append([]CustomMode(nil), s.customModes...),
+		LocalInput:    s.localInput,
 	}
 	s.mu.Unlock()
 	b, _ := json.MarshalIndent(p, "", "  ")
@@ -239,6 +243,35 @@ func (s *State) SetupComplete() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.setupComplete
+}
+
+// LocalInputSet reports whether an explicit local-input policy has been saved
+// (vs. still falling back to the -no-local-input boot default).
+func (s *State) LocalInputSet() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.localInput != nil
+}
+
+// LocalInputAllowed reports whether the local keyboard/mouse may drive the kiosk,
+// falling back to def when no explicit policy has been saved.
+func (s *State) LocalInputAllowed(def bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.localInput == nil {
+		return def
+	}
+	return *s.localInput
+}
+
+// SetLocalInput saves the local-input policy — the source of truth the agent
+// applies (udev/Xorg rules) at boot and the /api/input toggle mutates.
+func (s *State) SetLocalInput(allowed bool) {
+	s.mu.Lock()
+	v := allowed
+	s.localInput = &v
+	s.mu.Unlock()
+	s.save()
 }
 
 func (s *State) Info() StateInfo {

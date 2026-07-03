@@ -12,38 +12,24 @@ import (
 	"time"
 )
 
-// Content drives signage behaviour over the web kiosk: a URL playlist that
-// rotates on a timer, a periodic page reload (kiosk hygiene), an injected image
-// slideshow, and a document (PDF/slides) viewer with auto-scroll. It navigates /
-// injects in place via the supervisor (CDP, no Chromium restart) and only acts
+// Content drives signage behaviour over the web kiosk: a periodic page reload
+// (kiosk hygiene) and a document (PDF/slides) viewer with auto-scroll. It
+// navigates in place via the supervisor (CDP, no Chromium restart) and only acts
 // while a web mode is actually on screen — so a manual switch to console/off/
 // standby pauses it. It also holds the per-output content model (scaffold: only
 // the primary output renders today; secondary content is persisted + reported).
 // Persisted next to the display state in content.json.
 //
 // Exactly one "page owner" drives the single kiosk at a time. tick() arbitrates
-// in strict priority: slideshow > document > playlist/reload. Enabling any one of
-// slideshow/document/playlist disables the others so they can't fight.
+// in strict priority: document > reload. Enabling the document disables the
+// periodic reload path so they can't fight.
 type Content struct {
 	sup  *Supervisor
 	path string
 
-	mu          sync.Mutex
-	playlist    []string
-	intervalSec int
-	enabled     bool
-	reloadMin   int
-	idx         int
-	lastAdvance time.Time
-	lastReload  time.Time
-
-	// slideshow (injected over the web kiosk via CDP)
-	slideImages   []string
-	slideInterval int // seconds
-	slideFit      string
-	slideTrans    string
-	slideEnabled  bool
-	lastSlideKick time.Time
+	mu         sync.Mutex
+	reloadMin  int
+	lastReload time.Time
 
 	// document (PDF/slides over the web kiosk; auto-scroll)
 	docSrc      string // an http(s) URL or the resolved /docfs/<rel> served URL
@@ -67,8 +53,8 @@ type Content struct {
 }
 
 // localAgentBase derives the agent's own loopback base URL from the listen
-// address, so the locally-running kiosk can fetch /docfs and /slideshow over
-// 127.0.0.1 regardless of what external origin it is currently showing.
+// address, so the locally-running kiosk can fetch /docfs over 127.0.0.1
+// regardless of what external origin it is currently showing.
 func localAgentBase(addr string) string {
 	port := "80"
 	if i := strings.LastIndex(addr, ":"); i >= 0 && i+1 < len(addr) {
@@ -77,22 +63,9 @@ func localAgentBase(addr string) string {
 	return "http://127.0.0.1:" + port
 }
 
-// ContentInfo is the JSON for GET /api/content / the webUI.
+// ContentInfo is the JSON for the periodic-reload part of the webUI snapshot.
 type ContentInfo struct {
-	Playlist  []string `json:"playlist"`
-	IntervalS int      `json:"interval_s"`
-	Enabled   bool     `json:"enabled"`
-	ReloadMin int      `json:"reload_min"`
-	Index     int      `json:"index"`
-}
-
-// SlideshowInfo is the JSON for GET/POST /api/slideshow.
-type SlideshowInfo struct {
-	Images     []string `json:"images"`
-	IntervalS  int      `json:"interval_s"`
-	Fit        string   `json:"fit"`
-	Transition string   `json:"transition"`
-	Enabled    bool     `json:"enabled"`
+	ReloadMin int `json:"reload_min"`
 }
 
 // DocumentInfo is the JSON for GET/POST /api/document.
@@ -102,21 +75,13 @@ type DocumentInfo struct {
 	Enabled      bool   `json:"enabled"`
 }
 
-// OutputContent is what an output should show. type ∈ web|media|slideshow|off|
-// mirror. Only the primary output's content renders today; secondary content is
+// OutputContent is what an output should show. type ∈ web|media|off|mirror.
+// Only the primary output's content renders today; secondary content is
 // persisted + reported (rendering deferred — see node-api.md).
 type OutputContent struct {
 	Type string `json:"type"`
 	URL  string `json:"url,omitempty"`
 	Path string `json:"path,omitempty"`
-}
-
-type persistedSlideshow struct {
-	Images     []string `json:"images"`
-	IntervalS  int      `json:"interval_s"`
-	Fit        string   `json:"fit"`
-	Transition string   `json:"transition"`
-	Enabled    bool     `json:"enabled"`
 }
 
 type persistedDocument struct {
@@ -126,28 +91,14 @@ type persistedDocument struct {
 }
 
 type persistedContent struct {
-	Playlist      []string                 `json:"playlist"`
-	IntervalS     int                      `json:"interval_s"`
-	Enabled       bool                     `json:"enabled"`
 	ReloadMin     int                      `json:"reload_min"`
-	Slideshow     *persistedSlideshow      `json:"slideshow,omitempty"`
 	Document      persistedDocument        `json:"document"`
 	OutputContent map[string]OutputContent `json:"output_content,omitempty"`
 }
 
-const defaultSlideInterval = 6
-
-// maxSlideshowImages bounds how many images one slideshow may hold (the page
-// preloads them and the agent re-injects the list periodically).
-const maxSlideshowImages = 200
-
 func NewContent(cfg *Config, sup *Supervisor) *Content {
 	c := &Content{
 		sup:           sup,
-		intervalSec:   30,
-		slideInterval: defaultSlideInterval,
-		slideFit:      "contain",
-		slideTrans:    "fade",
 		docsDir:       cfg.DocsDir,
 		outputContent: map[string]OutputContent{},
 		localBase:     localAgentBase(cfg.Addr),
@@ -175,22 +126,8 @@ func (c *Content) load() {
 	if json.Unmarshal(b, &p) != nil {
 		return
 	}
-	c.playlist = filterHTTP(p.Playlist)
-	if p.IntervalS > 0 {
-		c.intervalSec = p.IntervalS
-	}
-	c.enabled = p.Enabled && len(c.playlist) > 0
 	if p.ReloadMin >= 0 {
 		c.reloadMin = p.ReloadMin
-	}
-	if p.Slideshow != nil {
-		c.slideImages = filterImages(p.Slideshow.Images)
-		if p.Slideshow.IntervalS > 0 {
-			c.slideInterval = p.Slideshow.IntervalS
-		}
-		c.slideFit = normFit(p.Slideshow.Fit)
-		c.slideTrans = normTransition(p.Slideshow.Transition)
-		c.slideEnabled = p.Slideshow.Enabled && len(c.slideImages) > 0
 	}
 	c.docSrc = p.Document.Src
 	if p.Document.AutoAdvanceS > 0 {
@@ -208,17 +145,7 @@ func (c *Content) save() {
 	}
 	c.mu.Lock()
 	p := persistedContent{
-		Playlist:  c.playlist,
-		IntervalS: c.intervalSec,
-		Enabled:   c.enabled,
 		ReloadMin: c.reloadMin,
-		Slideshow: &persistedSlideshow{
-			Images:     c.slideImages,
-			IntervalS:  c.slideInterval,
-			Fit:        c.slideFit,
-			Transition: c.slideTrans,
-			Enabled:    c.slideEnabled,
-		},
 		Document: persistedDocument{
 			Src:          c.docSrc,
 			AutoAdvanceS: c.docAdvanceS,
@@ -252,29 +179,14 @@ func (c *Content) tick() {
 	now := time.Now()
 
 	c.mu.Lock()
-	// Strict priority: slideshow > document > playlist/reload. Exactly one owns
-	// the page (the setters keep the others disabled).
-	slideOn := c.slideEnabled && len(c.slideImages) > 0
-	slideKickDue := slideOn && now.Sub(c.lastSlideKick) >= 5*time.Second
-	// A document owns the page whenever it is enabled — even with auto-advance off
-	// (a static PDF). Otherwise a configured periodic reload would keep reloading
-	// it out from under the viewer.
+	// Strict priority: document > reload. A document owns the page whenever it is
+	// enabled — even with auto-advance off (a static PDF). Otherwise a configured
+	// periodic reload would keep reloading it out from under the viewer.
 	docOn := c.docEnabled && c.docSrc != ""
 	docAdvDue := docOn && c.docAdvanceS > 0 && now.Sub(c.lastDocAdv) >= time.Duration(c.docAdvanceS)*time.Second
-	enabled, n, interval := c.enabled, len(c.playlist), c.intervalSec
-	advanceDue := enabled && n > 1 && interval > 0 && now.Sub(c.lastAdvance) >= time.Duration(interval)*time.Second
 	reloadDue := c.reloadMin > 0 && now.Sub(c.lastReload) >= time.Duration(c.reloadMin)*time.Minute
-	images := append([]string(nil), c.slideImages...)
-	slideMs := c.slideInterval * 1000
-	fit, tr := c.slideFit, c.slideTrans
 	c.mu.Unlock()
 
-	if slideOn {
-		if slideKickDue {
-			c.kickSlideshow(images, slideMs, fit, tr, now)
-		}
-		return // slideshow owns the page
-	}
 	if docOn {
 		if docAdvDue && c.sup.AdvanceDocument() {
 			c.mu.Lock()
@@ -282,10 +194,6 @@ func (c *Content) tick() {
 			c.mu.Unlock()
 		}
 		return // document owns the page
-	}
-	if advanceDue {
-		c.advance() // advancing loads a page; don't also reload this tick
-		return
 	}
 	if reloadDue {
 		c.mu.Lock()
@@ -295,71 +203,6 @@ func (c *Content) tick() {
 			log.Printf("[content] periodic reload: %v", err)
 		}
 	}
-}
-
-// kickSlideshow re-asserts the on-page slideshow overlay (idempotent on the page
-// side). The timer is committed only on success so a detached tick retries.
-func (c *Content) kickSlideshow(images []string, intervalMs int, fit, tr string, now time.Time) {
-	if c.sup.RunSlideshowIfWeb(images, intervalMs, fit, tr) {
-		c.mu.Lock()
-		c.lastSlideKick = now
-		c.mu.Unlock()
-	}
-}
-
-// advance moves to the next slide via the supervisor's atomic NavigateIfWeb
-// (which re-navigates in place ONLY if a running web kiosk is still on screen).
-// The index/timer are committed only on success, so a skipped tick (operator
-// switched away, or CDP momentarily detached) retries the same slide rather than
-// dropping it.
-func (c *Content) advance() {
-	c.mu.Lock()
-	next := (c.idx + 1) % len(c.playlist)
-	url := c.playlist[next]
-	c.mu.Unlock()
-	if c.sup.NavigateIfWeb(url) {
-		now := time.Now()
-		c.mu.Lock()
-		c.idx = next
-		c.lastAdvance = now
-		c.lastReload = now
-		c.mu.Unlock()
-	}
-}
-
-// SetPlaylist replaces the playlist and starts/stops rotation. Enabling the
-// playlist disables the slideshow/document so only one owns the page.
-func (c *Content) SetPlaylist(urls []string, intervalSec int, enabled bool) error {
-	clean := filterHTTP(urls)
-	if enabled && len(clean) == 0 {
-		return &apiError{code: 400, err: fmt.Errorf("playlist needs at least one http(s) URL")}
-	}
-	if intervalSec < 5 {
-		intervalSec = 5
-	}
-	c.mu.Lock()
-	c.playlist = clean
-	c.intervalSec = intervalSec
-	c.enabled = enabled && len(clean) > 0
-	c.idx = 0
-	now := time.Now()
-	c.lastAdvance = now
-	c.lastReload = now // restart the auto-reload countdown too
-	if c.enabled {
-		c.slideEnabled = false
-		c.docEnabled = false
-	}
-	first := ""
-	if c.enabled {
-		first = clean[0]
-	}
-	c.mu.Unlock()
-	c.save()
-	if first != "" {
-		c.sup.StopSlideshowIfWeb() // clear any lingering overlay
-		c.sup.NavigateIfWeb(first) // jump to the first item if a web kiosk is on screen
-	}
-	return nil
 }
 
 // SetReload sets the periodic reload interval in minutes (0 disables).
@@ -374,56 +217,10 @@ func (c *Content) SetReload(minutes int) {
 	c.save()
 }
 
-// SetSlideshow configures the image slideshow. Enabling it disables the
-// playlist/document and injects the overlay; disabling removes it.
-func (c *Content) SetSlideshow(images []string, intervalS int, fit, transition string, enabled bool) (SlideshowInfo, error) {
-	clean := filterImages(images)
-	if enabled && len(clean) == 0 {
-		return SlideshowInfo{}, &apiError{code: 400, err: fmt.Errorf("slideshow needs at least one http(s):// image URL")}
-	}
-	// Bound the list the page preloads/cycles (and the agent re-injects every few
-	// seconds) so a huge submission can't exhaust the kiosk's memory on a Pi.
-	if len(clean) > maxSlideshowImages {
-		log.Printf("[content] slideshow truncated %d→%d images", len(clean), maxSlideshowImages)
-		clean = clean[:maxSlideshowImages]
-	}
-	if intervalS <= 0 {
-		intervalS = defaultSlideInterval
-	}
-	c.mu.Lock()
-	c.slideImages = clean
-	c.slideInterval = intervalS
-	c.slideFit = normFit(fit)
-	c.slideTrans = normTransition(transition)
-	c.slideEnabled = enabled && len(clean) > 0
-	if c.slideEnabled {
-		c.enabled = false // the playlist yields the page
-		c.docEnabled = false
-	}
-	c.lastSlideKick = time.Time{}
-	on := c.slideEnabled
-	out := SlideshowInfo{Images: clean, IntervalS: intervalS, Fit: c.slideFit, Transition: c.slideTrans, Enabled: on}
-	kickImgs := append([]string(nil), c.slideImages...)
-	kickMs := c.slideInterval * 1000
-	kFit, kTr := c.slideFit, c.slideTrans
-	c.mu.Unlock()
-	c.save()
-	if on {
-		if c.sup.RunSlideshowIfWeb(kickImgs, kickMs, kFit, kTr) {
-			c.mu.Lock()
-			c.lastSlideKick = time.Now()
-			c.mu.Unlock()
-		}
-	} else {
-		c.sup.StopSlideshowIfWeb()
-	}
-	return out, nil
-}
-
 // SetDocument shows a PDF/slides document over the web kiosk (an http(s) URL or
-// a relative path under -docs-dir). Enabling disables the playlist/slideshow and
-// navigates the kiosk to the viewer URL; disabling stops auto-advance (the page
-// is left as-is — the operator switches the URL to leave it).
+// a relative path under -docs-dir). Enabling navigates the kiosk to the viewer
+// URL; disabling stops auto-advance (the page is left as-is — the operator
+// switches the URL to leave it).
 func (c *Content) SetDocument(src string, autoAdvanceS int, enabled bool) (DocumentInfo, error) {
 	served, err := validateDocSrc(c.docsDir, src)
 	if err != nil {
@@ -436,17 +233,12 @@ func (c *Content) SetDocument(src string, autoAdvanceS int, enabled bool) (Docum
 	c.docSrc = served
 	c.docAdvanceS = autoAdvanceS
 	c.docEnabled = enabled && served != ""
-	if c.docEnabled {
-		c.enabled = false
-		c.slideEnabled = false
-	}
 	c.lastDocAdv = time.Now()
 	on := c.docEnabled
 	out := DocumentInfo{Src: served, AutoAdvanceS: autoAdvanceS, Enabled: on}
 	c.mu.Unlock()
 	c.save()
 	if on {
-		c.sup.StopSlideshowIfWeb()
 		c.sup.NavigateIfWeb(withPDFViewerParams(c.absDocURL(served)))
 	}
 	return out, nil
@@ -473,16 +265,16 @@ func (c *Content) SetOutputContent(name string, oc OutputContent) error {
 	switch oc.Type {
 	case "off", "mirror":
 		oc.URL, oc.Path = "", ""
-	case "web", "slideshow":
+	case "web":
 		if len(filterHTTP([]string{oc.URL})) == 0 {
-			return &apiError{code: 400, err: fmt.Errorf("%s output content needs an http(s) url", oc.Type)}
+			return &apiError{code: 400, err: fmt.Errorf("web output content needs an http(s) url")}
 		}
 	case "media":
 		if oc.URL == "" && oc.Path == "" {
 			return &apiError{code: 400, err: fmt.Errorf("media output content needs a url or path")}
 		}
 	default:
-		return &apiError{code: 400, err: fmt.Errorf("unknown output content type %q (web|media|slideshow|off|mirror)", oc.Type)}
+		return &apiError{code: 400, err: fmt.Errorf("unknown output content type %q (web|media|off|mirror)", oc.Type)}
 	}
 
 	primary := ""
@@ -517,19 +309,6 @@ func (c *Content) SetOutputContent(name string, oc OutputContent) error {
 			m.Display = cur.Display // don't flip the compositor backend
 		}
 		return c.sup.Switch(m)
-	case "slideshow":
-		// A single still image on the primary via the slideshow injector.
-		c.mu.Lock()
-		c.slideImages = filterImages([]string{oc.URL})
-		c.slideEnabled = len(c.slideImages) > 0
-		c.enabled = false // hand the page to the slideshow
-		c.docEnabled = false
-		imgs := append([]string(nil), c.slideImages...)
-		ms := c.slideInterval * 1000
-		fit, tr := c.slideFit, c.slideTrans
-		c.mu.Unlock()
-		c.save()
-		c.sup.RunSlideshowIfWeb(imgs, ms, fit, tr)
 	case "media":
 		c.DisableOwners() // media leaves web mode; no page owner should re-assert
 		params := map[string]any{}
@@ -548,19 +327,16 @@ func (c *Content) SetOutputContent(name string, oc OutputContent) error {
 	return nil
 }
 
-// DisableOwners clears every content page-owner (playlist/slideshow/document) so
-// a direct web navigation or a non-web mode switch takes the screen without a
-// timer re-asserting stale content on top of it. Best-effort overlay clear.
+// DisableOwners clears the document page-owner so a direct web navigation or a
+// non-web mode switch takes the screen without the reload/document timer
+// re-asserting stale content on top of it.
 func (c *Content) DisableOwners() {
 	c.mu.Lock()
-	changed := c.enabled || c.slideEnabled || c.docEnabled
-	c.enabled = false
-	c.slideEnabled = false
+	changed := c.docEnabled
 	c.docEnabled = false
 	c.mu.Unlock()
 	if changed {
 		c.save()
-		c.sup.StopSlideshowIfWeb()
 	}
 }
 
@@ -581,14 +357,7 @@ func cloneOutputContent(m map[string]OutputContent) map[string]OutputContent {
 func (c *Content) Info() ContentInfo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return ContentInfo{Playlist: c.playlist, IntervalS: c.intervalSec, Enabled: c.enabled, ReloadMin: c.reloadMin, Index: c.idx}
-}
-
-func (c *Content) SlideshowInfo() SlideshowInfo {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	imgs := append([]string(nil), c.slideImages...)
-	return SlideshowInfo{Images: imgs, IntervalS: c.slideInterval, Fit: c.slideFit, Transition: c.slideTrans, Enabled: c.slideEnabled}
+	return ContentInfo{ReloadMin: c.reloadMin}
 }
 
 func (c *Content) DocInfo() DocumentInfo {
@@ -619,23 +388,7 @@ func filterHTTP(urls []string) []string {
 	return out
 }
 
-// filterImages keeps only http(s) image URLs. Local paths / file:// are rejected:
-// the slideshow is injected over an http(s) kiosk page, and Chromium blocks an
-// http(s) page from loading file:// subresources (so they would render blank),
-// and accepting arbitrary absolute paths would be a local-file-read surface.
-func filterImages(items []string) []string {
-	return filterHTTP(items)
-}
-
-// normFit normalizes the slideshow object-fit (contain|cover), default contain.
-func normFit(s string) string {
-	if strings.ToLower(strings.TrimSpace(s)) == "cover" {
-		return "cover"
-	}
-	return "contain"
-}
-
-// normTransition normalizes the slideshow transition (none|fade), default fade.
+// normTransition normalizes a media transition (none|fade), default fade.
 func normTransition(s string) string {
 	if strings.ToLower(strings.TrimSpace(s)) == "none" {
 		return "none"

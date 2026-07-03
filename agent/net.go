@@ -300,9 +300,11 @@ func parseWifiScan(out string, saved map[string]bool) ([]WifiNetwork, string) {
 }
 
 // WifiConnect joins a network (adding/activating a connection). An empty psk
-// connects to an open network. The psk is passed as a separate argv element (no
-// shell) and never logged.
-func (n *Net) WifiConnect(ssid, psk string) error {
+// connects to an open network. When hidden is set, or for a network that is not in
+// range yet, a saved profile is created instead so NetworkManager probes for the
+// SSID and auto-connects when it appears (see wifiAddHidden). The psk is passed as
+// a separate argv element (no shell) and never logged.
+func (n *Net) WifiConnect(ssid, psk string, hidden bool) error {
 	ssid = strings.TrimSpace(ssid)
 	if ssid == "" {
 		return fmt.Errorf("ssid required")
@@ -313,12 +315,19 @@ func (n *Net) WifiConnect(ssid, psk string) error {
 	// `nmcli dev wifi connect` takes the SSID as a bare positional (it accepts no
 	// `--` end-of-options terminator there), so reject a leading '-' — it could be
 	// parsed as an option (e.g. `-a`/`--ask` makes nmcli block for interactive
-	// input until our timeout). A dash-prefixed SSID must be joined over ssh.
+	// input until our timeout). A dash-prefixed SSID must be joined over ssh. The
+	// guard applies to the hidden path too (the SSID is still an nmcli token there).
 	if strings.HasPrefix(ssid, "-") {
 		return fmt.Errorf("invalid ssid (cannot start with '-')")
 	}
 	if psk != "" && (len(psk) < 8 || len(psk) > 63 || strings.ContainsAny(psk, "\x00\n\r")) {
 		return fmt.Errorf("a Wi-Fi password must be 8–63 characters")
+	}
+	// A hidden or not-yet-in-range network can't be joined with `dev wifi connect`
+	// (that only sees SSIDs the scan found) — save a profile that carries the SSID
+	// and the hidden flag so it auto-connects later.
+	if hidden {
+		return n.wifiAddHidden(ssid, psk)
 	}
 	args := []string{"dev", "wifi", "connect", ssid}
 	if psk != "" {
@@ -334,6 +343,66 @@ func (n *Net) WifiConnect(ssid, psk string) error {
 	}
 	log.Printf("[net] wifi connect to %q ok", ssid)
 	return nil
+}
+
+// wifiAddHidden creates (replacing any stale one) a saved Wi-Fi profile for a
+// hidden or out-of-range network, then tries to bring it up. The profile carries
+// 802-11-wireless.hidden=yes so NetworkManager actively probes for the SSID and
+// autoconnects when it appears; a not-in-range activation failure is NOT fatal —
+// the profile persists for later. The PSK is a separate argv element (no shell)
+// and never logged.
+func (n *Net) wifiAddHidden(ssid, psk string) error {
+	exists := n.savedWifi()[ssid]
+	sec := []string{}
+	if psk != "" {
+		sec = []string{"wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", psk}
+	}
+	if exists {
+		// Update IN PLACE so a failed change never destroys the working profile
+		// (delete-then-add would strand the node if the add failed). Converting an
+		// existing secured profile to open isn't handled here — supply a password to
+		// update a secured network.
+		args := append([]string{"connection", "modify", "id", ssid,
+			"802-11-wireless.ssid", ssid, "802-11-wireless.hidden", "yes", "connection.autoconnect", "yes"}, sec...)
+		if out, err := runShort(15*time.Second, "nmcli", args...); err != nil {
+			return fmt.Errorf("update network failed: %s", firstLine(out))
+		}
+	} else {
+		args := []string{"connection", "add", "type", "wifi", "con-name", ssid}
+		if dev, _ := n.wifiDevice(); dev != "" {
+			args = append(args, "ifname", dev)
+		}
+		args = append(args, "802-11-wireless.ssid", ssid, "802-11-wireless.hidden", "yes", "connection.autoconnect", "yes")
+		args = append(args, sec...)
+		if out, err := runShort(15*time.Second, "nmcli", args...); err != nil {
+			return fmt.Errorf("add network failed: %s", firstLine(out))
+		}
+	}
+	// Bring it up now. Distinguish a wrong-key/secrets failure (surface it, and drop
+	// a just-added profile so a retry is clean) from a genuine out-of-range failure
+	// (expected — the saved profile auto-connects when the AP appears).
+	out, err := runShort(45*time.Second, "nmcli", "connection", "up", "id", ssid)
+	if err == nil {
+		log.Printf("[net] hidden network %q saved and connected", ssid)
+		return nil
+	}
+	if psk != "" && wifiAuthFailure(out) {
+		if !exists {
+			_, _ = runShort(10*time.Second, "nmcli", "connection", "delete", "id", ssid)
+		}
+		return fmt.Errorf("couldn't connect to %q — check the password (the network appears to be in range)", ssid)
+	}
+	log.Printf("[net] hidden network %q saved (not connected now: %s)", ssid, firstLine(out))
+	return nil
+}
+
+// wifiAuthFailure reports whether an nmcli activation error looks like a
+// wrong-key / missing-secrets failure rather than a not-in-range / timeout one,
+// so the hidden-network path can surface a bad password instead of silently
+// "saving" it. Matched loosely across NetworkManager reason strings.
+func wifiAuthFailure(nmcliOut string) bool {
+	s := strings.ToLower(nmcliOut)
+	return strings.Contains(s, "secret") || strings.Contains(s, "802-1x") || strings.Contains(s, "password")
 }
 
 // WifiForget deletes a saved connection by SSID (its NetworkManager profile

@@ -19,28 +19,30 @@ import (
 
 // Server is the local control surface: webUI on GET / and JSON on /api/*.
 type Server struct {
-	cfg      *Config
-	sup      *Supervisor
-	stats    *Stats
-	apt      *Apt
-	cec      *CEC
-	vnc      *VNC
-	display  *Display
-	power    *Power
-	content  *Content
-	plymouth *Plymouth
-	state    *State
-	library  *Library
-	playlist *Playlist
-	miracast *Miracast
-	net      *Net
-	setup    *Setup
-	mem      *Memory
-	mux      *http.ServeMux
+	cfg       *Config
+	sup       *Supervisor
+	stats     *Stats
+	apt       *Apt
+	cec       *CEC
+	vnc       *VNC
+	display   *Display
+	power     *Power
+	content   *Content
+	plymouth  *Plymouth
+	state     *State
+	library   *Library
+	playlist  *Playlist
+	actions   *Actions
+	miracast  *Miracast
+	net       *Net
+	setup     *Setup
+	scheduler *Scheduler
+	mem       *Memory
+	mux       *http.ServeMux
 }
 
-func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, vnc *VNC, display *Display, power *Power, content *Content, plymouth *Plymouth, state *State, library *Library, playlist *Playlist, miracast *Miracast, netmgr *Net, setup *Setup) *Server {
-	s := &Server{cfg: cfg, sup: sup, stats: stats, apt: apt, cec: cec, vnc: vnc, display: display, power: power, content: content, plymouth: plymouth, state: state, library: library, playlist: playlist, miracast: miracast, net: netmgr, setup: setup, mem: NewMemory(cfg), mux: http.NewServeMux()}
+func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, vnc *VNC, display *Display, power *Power, content *Content, plymouth *Plymouth, state *State, library *Library, playlist *Playlist, actions *Actions, miracast *Miracast, netmgr *Net, setup *Setup) *Server {
+	s := &Server{cfg: cfg, sup: sup, stats: stats, apt: apt, cec: cec, vnc: vnc, display: display, power: power, content: content, plymouth: plymouth, state: state, library: library, playlist: playlist, actions: actions, miracast: miracast, net: netmgr, setup: setup, mem: NewMemory(cfg), mux: http.NewServeMux()}
 	s.mux.HandleFunc("/api/auth", s.handleAuth)
 	s.mux.HandleFunc("/api/logout", s.handleLogout)
 	s.mux.HandleFunc("/api/health", s.handleHealth)
@@ -58,10 +60,15 @@ func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, v
 	s.mux.HandleFunc("/api/custom", s.handleCustom)
 	s.mux.HandleFunc("/api/custom/delete", s.handleCustomDelete)
 	s.mux.HandleFunc("/api/custom/launch", s.handleCustomLaunch)
+	s.mux.HandleFunc("/api/actions", s.handleActions)
+	s.mux.HandleFunc("/api/actions/delete", s.handleActionDelete)
+	s.mux.HandleFunc("/api/actions/reorder", s.handleActionReorder)
+	s.mux.HandleFunc("/api/action/", s.handleActionFire)
 	s.mux.HandleFunc("/api/miracast", s.handleMiracast)
 	s.mux.HandleFunc("/api/hostname", s.handleHostname)
 	s.mux.HandleFunc("/api/wifi", s.handleWifi)
 	s.mux.HandleFunc("/api/wifi/delete", s.handleWifiForget)
+	s.mux.HandleFunc("/api/input", s.handleInput)
 	s.mux.HandleFunc("/setup", s.handleSetupPage)
 	s.mux.HandleFunc("/api/setup", s.handleSetup)
 	s.mux.HandleFunc("/api/setup/install", s.handleSetupInstall)
@@ -72,13 +79,10 @@ func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, v
 	s.mux.HandleFunc("/api/outputs", s.handleOutputs)
 	s.mux.HandleFunc("/api/outputs/content", s.handleOutputContent)
 	s.mux.HandleFunc("/api/zoom", s.handleZoom)
-	s.mux.HandleFunc("/api/schedule", s.handleSchedule)
+	s.mux.HandleFunc("/api/schedule/week", s.handleScheduleWeek)
 	s.mux.HandleFunc("/api/stats", s.handleStats)
 	s.mux.HandleFunc("/api/logs", s.handleLogs)
 	s.mux.HandleFunc("/api/upgrade", s.handleUpgrade)
-	s.mux.HandleFunc("/api/content", s.handleContent)
-	s.mux.HandleFunc("/api/playlist", s.handlePlaylist)
-	s.mux.HandleFunc("/api/slideshow", s.handleSlideshow)
 	s.mux.HandleFunc("/api/document", s.handleDocument)
 	s.mux.HandleFunc("/api/reload", s.handleReload)
 	s.mux.HandleFunc("/api/message", s.handleMessage)
@@ -97,7 +101,6 @@ func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, v
 	s.mux.HandleFunc("/api/playlist-media", s.handlePlaylistMedia)
 	s.mux.HandleFunc("/show", s.handleShowPage)
 	s.mux.HandleFunc("/docfs/", s.handleDocFS)
-	s.mux.HandleFunc("/slideshow", s.handleSlideshowPage)
 	// Live screen view: the WS bridge (most specific) wins over the static noVNC
 	// viewer subtree; ServeMux 301s "/vnc" → "/vnc/".
 	s.mux.HandleFunc("/vnc/ws", s.vnc.HandleWS)
@@ -105,6 +108,7 @@ func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, v
 		s.mux.Handle("/vnc/", http.StripPrefix("/vnc/", http.FileServer(http.FS(sub))))
 	}
 	s.mux.HandleFunc("/", s.handleIndex)
+	s.scheduler = NewScheduler(cfg, s.fireScheduled)
 	return s
 }
 
@@ -117,7 +121,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-// kioskLocalExempt lets the locally-running kiosk fetch the document/slideshow
+// kioskLocalExempt lets the locally-running kiosk fetch the document/media
 // viewer surfaces it is pointed at without an auth cookie (it has none — it's a
 // CDP-driven Chromium). Scoped to loopback so it never widens LAN access: only a
 // process on this host can reach these without the key.
@@ -135,12 +139,6 @@ func kioskLocalExempt(r *http.Request) bool {
 	}
 	if strings.HasPrefix(p, "/media/") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		return true // the kiosk / playlist player fetches uploaded media over loopback
-	}
-	if p == "/slideshow" && r.Method == http.MethodGet {
-		return true
-	}
-	if p == "/api/slideshow" && r.Method == http.MethodGet {
-		return true // the standalone viewer polls its config
 	}
 	if p == "/show" && r.Method == http.MethodGet {
 		return true // the media-playlist player page
@@ -224,20 +222,23 @@ type Snapshot struct {
 	Child   childInfo  `json:"child"`
 	CDP     cdpInfo    `json:"cdp"`
 
-	Stats     SysStats      `json:"stats"`
-	Display   DisplayInfo   `json:"display"`
-	Content   ContentInfo   `json:"content"`
-	Slideshow SlideshowInfo `json:"slideshow"`
-	Document  DocumentInfo  `json:"document"`
-	CEC       CECInfo       `json:"cec"`
-	VNC       VNCStatus     `json:"vnc"`
-	Memory    MemoryStatus  `json:"memory"`
-	Plymouth  PlymouthInfo    `json:"plymouth"`
-	State     StateInfo       `json:"state"`
-	Playlist  PlaylistSummary `json:"playlist"`
-	Miracast  MiracastInfo    `json:"miracast"`
-	Net       NetInfo         `json:"net"`
-	Caps      SnapshotCaps    `json:"caps"`
+	Stats         SysStats           `json:"stats"`
+	Display       DisplayInfo        `json:"display"`
+	Content       ContentInfo        `json:"content"`
+	Document      DocumentInfo       `json:"document"`
+	CEC           CECInfo            `json:"cec"`
+	VNC           VNCStatus          `json:"vnc"`
+	Memory        MemoryStatus       `json:"memory"`
+	Plymouth      PlymouthInfo       `json:"plymouth"`
+	State         StateInfo          `json:"state"`
+	Playlist      PlaylistSummary    `json:"playlist"`
+	Actions       []Action           `json:"actions"`
+	CurrentAction string             `json:"current_action,omitempty"`
+	Miracast      MiracastInfo       `json:"miracast"`
+	Net           NetInfo            `json:"net"`
+	Input         InputInfo          `json:"input"`
+	ScheduleWeek  WeeklyScheduleInfo `json:"schedule_week"`
+	Caps          SnapshotCaps       `json:"caps"`
 }
 
 // SnapshotCaps are agent-level gates the UI needs to show or hide controls,
@@ -245,6 +246,12 @@ type Snapshot struct {
 type SnapshotCaps struct {
 	Shutdown bool `json:"shutdown"`
 	Miracast bool `json:"miracast"`
+}
+
+// InputInfo is the node-global local-input policy (snapshot + GET /api/input).
+type InputInfo struct {
+	Allowed   bool `json:"allowed"`   // does the local keyboard/mouse drive the kiosk?
+	Supported bool `json:"supported"` // the agent can enforce it (running as root)
 }
 
 // apiError carries an HTTP status with the error.
@@ -293,6 +300,7 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if cdp.Attached {
 		cdp.URL = s.sup.chrome.endpoint()
 	}
+	curMode := Mode{Type: ms.Type, Display: ms.Display, Params: ms.Params}
 	writeJSON(w, 200, Snapshot{
 		Node:    s.net.Hostname(),
 		Label:   s.cfg.NodeLabel,
@@ -305,20 +313,23 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		Child:   childInfo{PID: ms.PID, Running: ms.Running},
 		CDP:     cdp,
 
-		Stats:     s.stats.Snapshot(),
-		Display:   s.display.Info(),
-		Content:   s.content.Info(),
-		Slideshow: s.content.SlideshowInfo(),
-		Document:  s.content.DocInfo(),
-		CEC:       s.cec.Info(),
-		VNC:       s.vnc.Status(),
-		Memory:    s.mem.Status(),
-		Plymouth:  s.plymouth.Info(),
-		State:     s.state.Info(),
-		Playlist:  s.playlist.Summary(),
-		Miracast:  s.miracast.Info(),
-		Net:       s.net.Info(),
-		Caps:      SnapshotCaps{Shutdown: s.cfg.AllowShutdown, Miracast: s.cfg.AllowMiracast},
+		Stats:         s.stats.Snapshot(),
+		Display:       s.display.Info(),
+		Content:       s.content.Info(),
+		Document:      s.content.DocInfo(),
+		CEC:           s.cec.Info(),
+		VNC:           s.vnc.Status(),
+		Memory:        s.mem.Status(),
+		Plymouth:      s.plymouth.Info(),
+		State:         s.state.Info(),
+		Playlist:      s.playlist.Summary(),
+		Actions:       s.actions.List(),
+		CurrentAction: s.actions.CurrentSlug(curMode),
+		Miracast:      s.miracast.Info(),
+		Net:           s.net.Info(),
+		Input:         s.inputInfo(),
+		ScheduleWeek:  s.scheduler.Info(),
+		Caps:          SnapshotCaps{Shutdown: s.cfg.AllowShutdown, Miracast: s.cfg.AllowMiracast},
 	})
 }
 
@@ -393,6 +404,179 @@ func (s *Server) handleCustomLaunch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.sup.Status())
 }
 
+// ---- saved actions (docs/node-api.md §2) ----
+
+// handleActions lists (GET) or saves (POST) saved actions — named, slugged,
+// fireable launchers that wrap any mode. POST body is an Action
+// `{id?,slug?,name,mode:{type,params,display}}`; the mode is validated so an
+// un-fireable action can't be saved.
+func (s *Server) handleActions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, 200, s.actions.Info())
+	case http.MethodPost:
+		var a Action
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&a); err != nil {
+			writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+			return
+		}
+		saved, err := s.actions.Upsert(a)
+		if err != nil {
+			writeErr(w, &apiError{code: 400, err: err})
+			return
+		}
+		writeJSON(w, 200, saved)
+	default:
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use GET or POST")})
+	}
+}
+
+// handleActionDelete removes a saved action by slug or id. `POST {"slug"|"id":"…"}`.
+func (s *Server) handleActionDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
+		return
+	}
+	var body struct {
+		Slug string `json:"slug"`
+		ID   string `json:"id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+		return
+	}
+	key := body.Slug
+	if key == "" {
+		key = body.ID
+	}
+	if !s.actions.Delete(key) {
+		writeErr(w, &apiError{code: 404, err: fmt.Errorf("no action %q", key)})
+		return
+	}
+	writeJSON(w, 200, s.actions.Info())
+}
+
+// handleActionReorder sets the display/fire order. `POST {"order":["slug-a",…]}`.
+func (s *Server) handleActionReorder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
+		return
+	}
+	var body struct {
+		Order []string `json:"order"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+		return
+	}
+	s.actions.Reorder(body.Order)
+	writeJSON(w, 200, s.actions.Info())
+}
+
+// handleActionFire switches to a saved action by slug: `POST /api/action/<slug>`.
+// The Stream-Deck-friendly entry point — send the shared key as an X-Sideshow-Key
+// (or Authorization: Bearer) header. Fire = sup.Switch(action.Mode), so it
+// inherits the supervisor's validation (400), switch-in-progress (409), and
+// launch (500) errors as-is.
+func (s *Server) handleActionFire(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
+		return
+	}
+	slug := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/action/"), "/")
+	if slug == "" {
+		writeErr(w, &apiError{code: 400, err: fmt.Errorf("missing action slug (POST /api/action/<slug>)")})
+		return
+	}
+	a, ok := s.actions.Get(slug)
+	if !ok {
+		writeErr(w, &apiError{code: 404, err: fmt.Errorf("no action %q", slug)})
+		return
+	}
+	if err := s.runAction(a); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, 200, s.sup.Status())
+}
+
+// runAction puts a saved action on screen: a web action with no explicit backend
+// (notably a playlist action → /show) inherits the node's current web backend
+// (X11 vs Wayland) so it works on both, and content owners are cleared first so a
+// timer can't navigate away from it. Shared by the fire endpoint + the scheduler.
+func (s *Server) runAction(a Action) error {
+	mode := a.Mode
+	if mode.Type == ModeWeb && mode.Display == "" {
+		if cur := s.sup.Status(); cur.Type == ModeWeb && cur.Display != "" {
+			mode.Display = cur.Display
+		}
+	}
+	s.content.DisableOwners()
+	if err := s.sup.Switch(mode); err != nil {
+		return err
+	}
+	s.recordActive()
+	return nil
+}
+
+// fireScheduled is the weekly scheduler's actuator: "@sleep" powers the display
+// off, "@wake" powers it back on without changing the mode (both are what the
+// nightly window synthesizes); any other value is a saved action slug — wake the
+// display if a prior @sleep put it down, then run the action.
+func (s *Server) fireScheduled(action string) error {
+	switch action {
+	case scheduleSleepAction:
+		if s.display.Asleep() {
+			return nil // already off — don't re-issue standby/CEC on a redundant transition
+		}
+		return s.display.Screen("", false)
+	case scheduleWakeAction:
+		if !s.display.Asleep() {
+			return nil // already on — don't re-run xrandr / yank a CEC TV's input on an awake screen
+		}
+		return s.display.Screen("", true)
+	}
+	a, ok := s.actions.Get(action)
+	if !ok {
+		return fmt.Errorf("scheduled action %q not found", action)
+	}
+	if s.display.Info().Asleep {
+		_ = s.display.Screen("", true) // undo a prior scheduled @sleep before showing content
+	}
+	return s.runAction(a)
+}
+
+// StartScheduler launches the weekly-schedule enforcement loop (see weekly.go).
+func (s *Server) StartScheduler() { s.scheduler.Start() }
+
+// MigrateNightly folds a legacy nightly sleep/wake window (from display.json) into
+// the unified scheduler once, before StartScheduler. See Scheduler.MigrateNightly.
+func (s *Server) MigrateNightly(enabled bool, sleep, wake string) {
+	s.scheduler.MigrateNightly(enabled, sleep, wake)
+}
+
+// handleScheduleWeek returns (GET) or sets (POST) the weekly schedule.
+func (s *Server) handleScheduleWeek(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, 200, s.scheduler.Info())
+	case http.MethodPost:
+		var info WeeklyScheduleInfo
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&info); err != nil {
+			writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+			return
+		}
+		out, err := s.scheduler.Set(info)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, 200, out)
+	default:
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use GET or POST")})
+	}
+}
+
 // handleMiracast returns (GET) or sets (POST) the Miracast safety config: the P2P
 // interface pin, the session time-box, and the uplink auto-abort. The hard
 // -allow-miracast deploy-time gate is reported (allowed) but not settable here.
@@ -452,14 +636,15 @@ func (s *Server) handleWifi(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, s.net.WifiStatus())
 	case http.MethodPost:
 		var body struct {
-			SSID string `json:"ssid"`
-			PSK  string `json:"psk"`
+			SSID   string `json:"ssid"`
+			PSK    string `json:"psk"`
+			Hidden bool   `json:"hidden"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
 			writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
 			return
 		}
-		if err := s.net.WifiConnect(body.SSID, body.PSK); err != nil {
+		if err := s.net.WifiConnect(body.SSID, body.PSK, body.Hidden); err != nil {
 			writeErr(w, &apiError{code: 400, err: err})
 			return
 		}
@@ -487,6 +672,71 @@ func (s *Server) handleWifiForget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, s.net.WifiStatus())
+}
+
+// inputInfo reports the node-global local-input policy for the snapshot + GET
+// /api/input: whether local input reaches the kiosk, and whether the agent can
+// actually enforce it (it needs root to write the udev/Xorg rules).
+func (s *Server) inputInfo() InputInfo {
+	return InputInfo{
+		Allowed:   s.state.LocalInputAllowed(!s.cfg.NoLocalInput),
+		Supported: os.Geteuid() == 0,
+	}
+}
+
+// handleInput returns (GET) or sets (POST) whether the physical keyboard/mouse
+// controls the kiosk. `POST {"allowed":bool}`. The persisted policy is the source
+// of truth (re-applied at boot); remote control (VNC/panel) is unaffected. A change
+// is applied live on a Wayland node by restarting the compositor (labwc
+// re-enumerates input); on an agent-owned-X node the Xorg rule takes effect on the
+// next agent restart/reboot (reported via applied_live:false).
+func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, 200, s.inputInfo())
+	case http.MethodPost:
+		var body struct {
+			Allowed *bool `json:"allowed"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+			writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+			return
+		}
+		if body.Allowed == nil {
+			writeErr(w, &apiError{code: 400, err: fmt.Errorf("missing allowed (bool)")})
+			return
+		}
+		if os.Geteuid() != 0 {
+			writeErr(w, &apiError{code: 501, err: fmt.Errorf("local-input control needs the agent to run as root")})
+			return
+		}
+		allowed := *body.Allowed
+		s.state.SetLocalInput(allowed)
+		changed := ApplyNoLocalInput(s.cfg, !allowed)
+		// Apply live where we can: on a Wayland node the running compositor IS the
+		// mode, so RestartMode() relaunches labwc and it re-enumerates input. On an
+		// agent-owned Xorg node the xorg.conf.d rule needs an Xorg restart — deferred
+		// to the next agent restart/reboot (the persisted policy is applied at boot).
+		// Run the live apply SYNCHRONOUSLY so applied_live reflects what actually
+		// happened (a concurrent switch makes RestartMode 409). It blocks the request
+		// for the ~3–5s compositor restart — acceptable for a deliberate toggle.
+		appliedLive := false
+		if changed && s.sup.Status().Display == DisplayWayland {
+			if err := s.sup.RestartMode(); err != nil {
+				log.Printf("[input] live apply (RestartMode) failed: %v", err)
+			} else {
+				appliedLive = true
+			}
+		}
+		writeJSON(w, 200, map[string]any{
+			"allowed":      allowed,
+			"supported":    true,
+			"applied_live": appliedLive,
+			"changed":      changed,
+		})
+	default:
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use GET or POST")})
+	}
 }
 
 // handleSetupPage serves the first-run wizard. Reachable pre-auth only while
@@ -695,8 +945,8 @@ func (s *Server) handleURL(w http.ResponseWriter, r *http.Request) {
 	// current web mode's display (so a Wayland node stays Wayland) rather than
 	// falling back to the compositor/X11 default — which is broken on an X-less
 	// node. Falls through to the default only when not already in a web mode.
-	// A direct URL change is no content owner's job — clear any active slideshow/
-	// document/playlist so a timer doesn't re-assert old content over the new URL.
+	// A direct URL change is no content owner's job — clear the active document
+	// viewer so a timer doesn't re-assert old content over the new URL.
 	s.content.DisableOwners()
 	m := Mode{Type: ModeWeb, Params: map[string]any{"url": body.URL, "dark": dark}}
 	if cur := s.sup.Status(); cur.Type == ModeWeb && cur.Display != "" {
@@ -797,29 +1047,6 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(strings.Join(lines, "\n") + "\n"))
 }
 
-// handleSchedule sets the nightly sleep/wake schedule (node-local time).
-// `POST {"enabled":true,"sleep":"22:00","wake":"07:00"}` — enabled:false disables it.
-func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
-		return
-	}
-	var body struct {
-		Enabled bool   `json:"enabled"`
-		Sleep   string `json:"sleep"`
-		Wake    string `json:"wake"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
-		writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
-		return
-	}
-	if err := s.display.SetSchedule(body.Enabled, body.Sleep, body.Wake); err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, 200, s.display.Info())
-}
-
 // handleRotate rotates the display (X11) via xrandr. `POST {"degrees":0|90|180|270}`.
 func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -883,7 +1110,7 @@ func (s *Server) handleOutputs(w http.ResponseWriter, r *http.Request) {
 // handleOutputContent assigns content to an output (multi-display). Only the
 // PRIMARY output's content renders today; secondary content is persisted +
 // reported (rendering deferred — see node-api.md).
-// `POST {"output":"HDMI-2","type":"web|media|slideshow|off|mirror","url":"…","path":"…"}`
+// `POST {"output":"HDMI-2","type":"web|media|off|mirror","url":"…","path":"…"}`
 func (s *Server) handleOutputContent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
@@ -988,68 +1215,6 @@ func (s *Server) handleUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 202, s.apt.Status())
-}
-
-// handleContent returns the signage state (playlist + reload).
-func (s *Server) handleContent(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.content.Info())
-}
-
-// handlePlaylist sets the rotating URL playlist.
-// `POST {"urls":["…"],"interval_s":30,"enabled":true}`
-func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
-		return
-	}
-	var body struct {
-		URLs      []string `json:"urls"`
-		IntervalS int      `json:"interval_s"`
-		Enabled   bool     `json:"enabled"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
-		writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
-		return
-	}
-	if body.IntervalS == 0 {
-		body.IntervalS = 30
-	}
-	if err := s.content.SetPlaylist(body.URLs, body.IntervalS, body.Enabled); err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, 200, s.content.Info())
-}
-
-// handleSlideshow returns (GET) or sets (POST) the image slideshow.
-// `POST {"images":[…],"interval_s":6,"fit":"contain|cover","transition":"none|fade","enabled":true}`.
-// The slideshow rides the web kiosk via CDP injection; enabling it pauses the
-// playlist/document.
-func (s *Server) handleSlideshow(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		writeJSON(w, 200, s.content.SlideshowInfo())
-	case http.MethodPost:
-		var body struct {
-			Images     []string `json:"images"`
-			IntervalS  int      `json:"interval_s"`
-			Fit        string   `json:"fit"`
-			Transition string   `json:"transition"`
-			Enabled    bool     `json:"enabled"`
-		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
-			writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
-			return
-		}
-		info, err := s.content.SetSlideshow(body.Images, body.IntervalS, body.Fit, body.Transition, body.Enabled)
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		writeJSON(w, 200, info)
-	default:
-		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use GET or POST")})
-	}
 }
 
 // handleDocument returns (GET) or sets (POST) the document (PDF/slides) viewer.
@@ -1594,15 +1759,10 @@ func (s *Server) handleScreenshot(w http.ResponseWriter, r *http.Request) {
 	w.Write(png)
 }
 
-// handleSlideshowPage serves the embedded standalone slideshow viewer.
-func (s *Server) handleSlideshowPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(slideshowHTML)
-}
-
 // handleShowPage serves the embedded mixed-media playlist player.
 func (s *Server) handleShowPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store") // player HTML changes on deploy; keep the kiosk fresh
 	w.Write(showHTML)
 }
 
@@ -1616,6 +1776,16 @@ func (s *Server) handleShowPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePlaylistMedia(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		// ?action=<slug> → that playlist action's items (what /show?action= fetches);
+		// no param → the single global playlist.
+		if slug := r.URL.Query().Get("action"); slug != "" {
+			if pi, ok := s.actions.PlaylistInfo(slug); ok {
+				writeJSON(w, 200, pi)
+				return
+			}
+			writeErr(w, &apiError{code: 404, err: fmt.Errorf("no playlist action %q", slug)})
+			return
+		}
 		writeJSON(w, 200, s.playlist.Info())
 	case http.MethodPost:
 		var body struct {
@@ -1641,8 +1811,8 @@ func (s *Server) handlePlaylistMedia(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Play = point the kiosk at the /show player. Clear the CDP content
-			// owners (url playlist / slideshow / document) so a lingering timer can't
-			// navigate away from /show. Inherit the current compositor backend.
+			// owner (the document viewer) so a lingering timer can't navigate away
+			// from /show. Inherit the current compositor backend.
 			s.content.DisableOwners()
 			m := Mode{Type: ModeWeb, Params: map[string]any{"url": info.ShowURL}}
 			if cur := s.sup.Status(); cur.Type == ModeWeb && cur.Display != "" {
@@ -1666,6 +1836,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// The panel shell changes on every deploy and the URL never does — don't let a
+	// browser serve a stale cached copy (a deploy updated the node but the operator's
+	// browser kept showing the old UI).
+	w.Header().Set("Cache-Control", "no-store")
 	w.Write(indexHTML)
 }
 

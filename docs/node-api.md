@@ -117,6 +117,37 @@ that tears down the current owner and brings up the next (ROADMAP §1). A mode i
   visible. A foreground crash returns the screen to the primary VT automatically; a failed primary
   switch that tore down a working base restores the X web kiosk rather than blanking the screen.
 
+  **Kiosk input lockdown (`-lock-input`).** Off by default (it changes local input handling —
+  enable per node in the unit). When set, the agent strips the compositor's window-management
+  shortcuts so a local keyboard/mouse can't switch away from, close, or pop a menu over the kiosk:
+  under **labwc** it writes an agent-owned config dir (`/var/lib/sideshow/labwc/rc.xml`) whose inert
+  binds suppress *all* of labwc's defaults (Alt+Tab, Super-tiling, Alt+F4, the right-click root
+  menu) and points labwc at it via `-C` (the launcher honours `SIDESHOW_LABWC_CONFIG`); under
+  **matchbox** it writes an empty `~/.matchbox/kbdconfig`, which overrides matchbox's built-in
+  shortcuts.
+
+  It also closes **VT switching** (`Ctrl+Alt+Fn`), by the means each stack allows:
+  - **X11** — enforces Xorg `-novtswitch` (the X server refuses the switch).
+  - **Wayland / non-X** — wlroots owns VT switching below labwc and exposes no knob, so the agent
+    closes it at the **seat** instead: it writes a logind override (`NAutoVTs=0`/`ReserveVT=0`) and
+    masks the console gettys (`getty@tty1..6`), so a switch lands on a dead console with no login or
+    shell. Applied automatically at boot (root only) and reconciled with the flag — the override
+    drop-in doubles as the "applied" marker (written before masking, removed after unmasking), so
+    turning `-lock-input` off unmasks `getty@tty1..6` and drops the override, and an interrupted
+    apply/revert is always finished on the next boot (the masks can never get stuck on). Trade-off:
+    the off path unmasks the whole range, re-enabling any getty you masked by hand.
+
+  **No local input (`-no-local-input`).** A stronger, orthogonal stance for a *pure display*: whereas
+  `-lock-input` leaves the page interactive (it only removes the compositor's escape shortcuts), this
+  makes the compositor ignore **all local keyboard/mouse/touch** devices, so nothing — not even a
+  click or `Ctrl+N` in Chromium — reaches the kiosk. The agent installs a libinput udev rule
+  (`/etc/udev/rules.d/99-sideshow-noinput.rules`, `LIBINPUT_IGNORE_DEVICE`) and, on an `-start-x`
+  node, an `xorg.conf.d` `Option "Ignore" "on"` snippet (the libinput property alone isn't honored
+  under X). **Remote control (VNC / the panel) still works** — it injects through wlroots
+  *virtual*-input, which the rules don't touch. Power/lid/sleep buttons are left alone. Reconciled
+  with the flag (off removes the files); takes effect when the compositor next (re)starts, i.e. the
+  deploy restart. Root only.
+
 **Scope:** implemented — `web`/`app`/`media`/`airplay`/`moonlight`/`steamlink`/`miracast` on
 `display: compositor`, `web` on `display: wayland`, `app` on `display: console`, and
 `media`/`airplay`/`app` on `display: kms`. `web` URLs must be `http(s)://`. `media`, `airplay`,
@@ -176,8 +207,7 @@ is on, VNC also allows input control** (otherwise the live view is forced view-o
   this surface is gated like everything else, closing the pre-auth hole.
 - **Loopback-only kiosk fetches** — the locally-running CDP-driven kiosk has no auth cookie, so a
   handful of viewer surfaces are exempt **only for a loopback client** (never widening LAN access):
-  `/docfs/…`, `GET`/`HEAD /media/…`, `GET /slideshow`, `GET /api/slideshow`, `GET /show`, and
-  `GET /api/playlist-media`.
+  `/docfs/…`, `GET`/`HEAD /media/…`, `GET /show`, and `GET /api/playlist-media`.
 
 ### `GET /api/status` → current mode + health
 
@@ -221,8 +251,7 @@ cached `Info()` of every manager. Fields:
 
   "stats":     { … },        // SysStats (same as GET /api/stats)
   "display":   { … },        // DisplayInfo (rotation/zoom/asleep/schedule/layout/outputs)
-  "content":   { … },        // signage playlist + reload
-  "slideshow": { … },        // image slideshow config
+  "content":   { "reload_min": 0 }, // periodic page-reload interval (minutes)
   "document":  { … },        // document viewer config
   "cec":       { … },        // CECInfo (same as GET /api/cec)
   "vnc":       { … },        // VNCStatus (same as GET /api/vnc)
@@ -305,7 +334,7 @@ first navigation issued) or fails — so the caller knows the screen actually ch
 Convenience: `POST /api/url {"url":"…","dark":true}` is sugar for `POST /api/mode {type:web,
 params:{url}}` (re-navigates in place if already in web mode — no Chromium restart; `dark` defaults
 true). It **inherits the current web mode's `display`** (so a Wayland node stays Wayland) and clears
-any active slideshow/document/playlist owner so a timer can't re-assert old content over the new URL.
+the active document owner so a timer can't re-assert old content over the new URL.
 `400` on a missing/non-`http(s)` URL. And `POST /api/media {"url"|"path":"…","loop":true,"mute":false}`
 is sugar for `POST /api/mode {type:media, display:compositor, params:{…}}` — exactly one of
 `url`/`path` (`loop` default true, `mute` default false); `400` on missing/both, a bad URL scheme, or
@@ -327,6 +356,31 @@ mode with a chosen display surface. Persisted in `state.json` (also surfaced in 
 - `POST /api/custom/launch {"id":"…"}` → switches to the saved mode (built as `{type:"app", display,
   params:{argv:[command, …args], env}}`) and returns the new `status.mode`. The app-mode validation
   and the display=kms root gate are enforced by the switch itself; `404` if the id is unknown.
+
+### Actions — saved, slugged, fireable launchers
+
+An **action** generalizes a custom mode: a named launcher wrapping ANY mode (not just `app`), with a
+url-safe **slug** and an ordering **index**. Fire one by slug from a Stream Deck or a script.
+Persisted in `actions.json`; also surfaced in `snapshot.actions` (+ `snapshot.current_action`, the
+slug of the action matching what is on screen). Existing `custom_modes` are migrated into actions on
+first run.
+
+- `GET /api/actions` → `{ "actions": [ { id, slug, index, name, mode:{type,params,display} } ] }`
+  (sorted by index).
+- `POST /api/actions {"id"?,"slug"?,"name","mode":{…}}` — create (no `id`) or update (existing `id`);
+  returns the saved `Action`. `name` is required; `mode` is validated by the same rules as
+  `POST /api/mode`, so an un-fireable action can't be saved (`400`). The slug is normalized to
+  `[a-z0-9-]` (derived from the name when omitted); an operator-typed slug that collides with another
+  action is rejected (`400`), a derived collision is auto-suffixed (`news` → `news-2`).
+- `POST /api/actions/delete {"slug"|"id":"…"}` → the refreshed list; `404` if unknown.
+- `POST /api/actions/reorder {"order":["slug-a","slug-b",…]}` → the reordered list (listed slugs take
+  positions `0…n-1`; any omitted keep their relative order after them).
+- `POST /api/action/<slug>` → fires the action (`sup.Switch(action.mode)` + records it active) and
+  returns the new `status.mode`. Send the node key as `X-Sideshow-Key` (or `Authorization: Bearer`).
+  Inherits the switch's errors as-is: `400` (bad mode), `404` (unknown slug), `409` (a switch is in
+  progress), `500` (launch failed).
+
+> `/api/custom*` remains as a compatibility shim for one release; new integrations use `/api/actions*`.
 
 ### `GET /api/screenshot` → PNG thumbnail of the current screen
 
@@ -388,7 +442,7 @@ follow-up).
   per-output rotations are re-applied after the layout change (xrandr `--auto` resets them).
   Returns the `DisplayInfo`. `400` on an unknown mode or <2 outputs for mirror/extend; `409` under
   Wayland or a foreground mode.
-- `POST /api/outputs/content {"output":"HDMI-2","type":"web|media|slideshow|off|mirror","url":"…","path":"…"}`
+- `POST /api/outputs/content {"output":"HDMI-2","type":"web|media|off|mirror","url":"…","path":"…"}`
   — assigns content to an output (`output` optional → primary). **Only the primary output's content
   renders today** (routed through the running kiosk / a media switch); a **secondary** output's
   assignment is **persisted + reported** by `/api/outputs` but **not yet rendered** (positioned
@@ -443,13 +497,39 @@ whole-screen (output addressing isn't wired there).
 > may show "no signal" rather than fully power down. `/api/screen` does both; `/api/cec` is the
 > CEC-only path.
 
-### `POST /api/schedule` → nightly sleep/wake schedule
+### `GET /api/schedule/week` · `POST /api/schedule/week` → the display timeline
 
-`{"enabled": true, "sleep": "22:00", "wake": "07:00"}` — the agent sleeps/wakes the screen
-(via `/api/screen`) at those **node-local** times; `enabled:false` disables it. Persisted and
-re-armed at boot. The scheduler is **edge-triggered** (it acts only when the window boundary is
-crossed, and only if the actual state disagrees) so a manual Sleep/Wake in between sticks until the
-next boundary. Wraps midnight (22:00→07:00). Returns the `DisplayInfo`. `400` on a bad `HH:MM`.
+One scheduler owns the display timeline: a per-weekday list of **time → action** transitions,
+date **exceptions**, and a folded-in **nightly window**. Node-local time; persisted (`schedule.json`,
+hardened atomic write) and re-armed at boot. A single **edge-triggered** 30s tick (first tick after
+the cold-boot window) computes the action that should be on screen now and fires it once per
+transition — so a manual mode switch between transitions sticks until the next slot.
+
+```json
+{
+  "enabled": true,
+  "days": [ [ {"at":"08:00","action":"lobby"}, {"at":"18:00","action":"@sleep"} ], … 7 ],
+  "exceptions": [ {"date":"2026-12-25","entries":[{"at":"00:00","action":"@sleep"}]} ],
+  "nightly": {"enabled": true, "sleep": "22:00", "wake": "07:00"}
+}
+```
+
+`days` is indexed by weekday (`0`=Sunday … `6`=Saturday). An `action` is a saved **Action slug**
+(see `/api/actions`) or a reserved token: **`@sleep`** powers the display off, **`@wake`** powers
+it back on **without changing the mode** (content keeps running behind a slept screen). The last
+entry of a day carries past midnight until the next day's first entry; an empty day inherits the
+previous day's last entry (blank a day with a single `{"00:00","@sleep"}`).
+
+**Nightly window** is the everyday "off at `sleep`, back on at `wake`" cycle (its own `enabled`,
+independent of the weekly `enabled`). It is **not** a second scheduler: when enabled it contributes a
+daily `{sleep→@sleep, wake→@wake}` pair that is **merged** into each day's timeline, so it composes
+with explicit entries under the same "last transition ≤ now wins" rule (an explicit entry at the
+exact same minute wins). Enabling only the nightly window (weekly `enabled:false`) is fine.
+
+`POST` replaces the whole schedule and returns it. `400` on a bad `HH:MM` / exception date, or a
+nightly window whose `sleep`==`wake`. *The former `POST /api/schedule` (a separate nightly-only
+scheduler) is retired — a legacy nightly window in `display.json` is migrated into `nightly` on
+first boot after upgrade.*
 
 ### `GET /api/cec` · `POST /api/cec` → TV power over HDMI-CEC
 
@@ -504,9 +584,10 @@ login), so a backend change (X↔Wayland) shows/hides it on the next refresh.
 
 ### Signage / content
 
-- `GET /api/content` → `{ playlist, interval_s, enabled, reload_min, index }`.
-- `POST /api/playlist {"urls":[…],"interval_s":30,"enabled":true}` — rotate URLs in place (CDP
-  re-navigate, no restart); pauses automatically while a non-web mode is on screen. Persisted.
+The live signage surfaces are the **mixed-media playlist + the `/show` player** (below), the
+**document viewer**, and **per-output content** — each drives the single web kiosk. A periodic page
+reload (kiosk hygiene) rounds it out. Exactly one page owner drives the kiosk at a time.
+
 - `POST /api/reload {"minutes":15}` — periodic page reload (0 disables); `{"now":true}` reloads now.
 - `POST /api/message {"text":"…","seconds":30}` — overlay a banner on the kiosk (`{"clear":true}`
   removes it). Text is injected as DOM `textContent` (no HTML/script). Optional appearance:
@@ -514,14 +595,6 @@ login), so a backend change (X↔Wayland) shows/hides it on the next refresh.
   `top`), `"size"` (font px, default 18, clamped 10–200), `"color"` and `"bg"` (CSS color tokens —
   hex / `rgb()` / named; anything else is rejected and the default used, so the inline style can't
   be broken out of). Works over both the X and Wayland kiosks (it's CDP-driven).
-- `GET /api/slideshow` → `{ images, interval_s, fit, transition, enabled }`.
-  `POST /api/slideshow {"images":[…],"interval_s":6,"fit":"contain|cover","transition":"none|fade","enabled":true}`
-  — an image slideshow that **rides the web kiosk** (a full-screen overlay injected over CDP, no
-  Chromium restart, so screenshots/watchdog keep working). Each image must be an `http(s)://` URL —
-  the overlay sits on an http(s) page and Chromium blocks `file://` subresources from it (and an
-  arbitrary local path would be a file-read surface), so local paths are rejected. Enabling it
-  **pauses the playlist + document** (one page owner at a time); `{"enabled":false}` clears the
-  overlay. `400` if enabled with no usable image.
 - `GET /api/document` → `{ src, auto_advance_s, enabled }`.
   `POST /api/document {"url"|"path":"…","auto_advance_s":0,"enabled":true}` — show a PDF / slides
   over the web kiosk. `url` is any `http(s)://`; `path` is a **relative path under `-docs-dir`**,
@@ -532,7 +605,7 @@ login), so a backend change (X↔Wayland) shows/hides it on the next refresh.
   access. The PDF viewer chrome is hidden so the document fills the screen. `auto_advance_s>0`
   scrolls the top-level page every N seconds (good for a long HTML/scrolling doc; note Chromium's
   built-in PDF viewer renders multi-page PDFs in a sandboxed embed, so page-by-page advance there is
-  best-effort). Enabling it **pauses the playlist + slideshow**.
+  best-effort). Enabling the document owns the page (a periodic reload won't reload it away).
 
 ### Media library (uploadable store)
 
@@ -575,10 +648,11 @@ library is disabled and the `/api/library*` endpoints return **`501`**.
 ### Mixed-media playlist + the `/show` player
 
 An ordered list of images, videos, audio, and documents (from the media library or `http(s)://`
-URLs) that the kiosk plays by pointing at the agent-served **`/show`** player page. Unlike the
-CDP-injected slideshow, `/show` is self-contained: it fetches this config and advances client-side
-(on an interval, or when a video/audio ends), so mixed media "one after another" works without any
-agent-side ticker. Persisted in `playlist.json`.
+URLs) that the kiosk plays by pointing at the agent-served **`/show`** player page. `/show` is
+self-contained: it fetches this config and advances client-side (on an interval, or when a
+video/audio ends), so mixed media "one after another" works without any agent-side ticker. This is
+the signage playlist (it replaced the legacy CDP-injected URL rotation / image slideshow). Persisted
+in `playlist.json`.
 
 - `GET /api/playlist-media` → the full config (also what `/show` fetches):
   ```jsonc
@@ -671,13 +745,30 @@ active mode.
   Networks merge the live scan with saved connections (a saved-but-unseen network reports `signal:0`
   so it can still be forgotten); **PSKs are never returned**. `supported:false` (with a `note`) when
   `nmcli` or a wireless device is absent.
-- `POST /api/wifi {"ssid":"…","psk":"…"}` — joins a network (an empty `psk` = an open network); the
-  PSK is passed as a separate argv element (no shell) and never logged. `400` on a bad SSID (empty,
-  a leading `-`, control chars, > 32 chars) or a PSK outside 8–63 chars. Returns the refreshed
-  `WifiStatus`.
+- `POST /api/wifi {"ssid":"…","psk":"…","hidden"?:false}` — joins a network (an empty `psk` = an open
+  network); the PSK is passed as a separate argv element (no shell) and never logged. `400` on a bad
+  SSID (empty, a leading `-`, control chars, > 32 chars) or a PSK outside 8–63 chars. With
+  `hidden:true` — the way to pre-provision a hidden or not-yet-in-range network — a saved profile is
+  created instead (`nmcli connection add … 802-11-wireless.hidden yes`, `autoconnect yes`) so the node
+  probes for the SSID and joins when it appears; a "not in range now" activation failure is non-fatal
+  (the profile persists). Returns the refreshed `WifiStatus`.
 - `POST /api/wifi/delete {"ssid":"…"}` — forgets a saved connection (`nmcli connection delete`); only
   an SSID that already has a saved profile is accepted. `400` otherwise. Returns the refreshed
   `WifiStatus`.
+
+### `GET /api/input` · `POST /api/input` → local keyboard/mouse policy
+
+Node-global: whether the physically-attached keyboard/mouse drives the kiosk (remote control via the
+panel / VNC is unaffected). The **persisted policy is the source of truth**, re-applied at boot; the
+`-no-local-input` flag only seeds it on first boot. Also in `snapshot.input`.
+
+- `GET /api/input` → `{ "allowed": bool, "supported": bool }`. `supported:false` when the agent is not
+  root (it can't write the udev/Xorg rules).
+- `POST /api/input {"allowed":bool}` → persists the policy and reconciles the libinput udev rule (all
+  nodes) plus the `xorg.conf.d` Ignore snippet (agent-owned-X nodes). Applied **live** on a Wayland
+  node by restarting the compositor (labwc re-enumerates input — a brief kiosk blip); on an
+  agent-owned-X node the Xorg rule takes effect on the next agent restart / reboot. Returns
+  `{ allowed, supported, applied_live, changed }`. `501` if the agent is not root.
 
 ### First-run setup wizard
 

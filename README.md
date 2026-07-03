@@ -26,6 +26,20 @@ Wayland/labwc), install the features you want, and go.
 
 Prefer to build it yourself? See [Build from source](#build-from-source).
 
+### Flashable images
+
+Each release also ships **preconfigured, flashable appliance images** (built in CI) with the deps,
+the agent, and `disp-kmsshot` already installed — flash, boot, and the node comes up in the
+agent-owned display showing the setup wizard. On first boot the node **expands the root filesystem
+to fill the card/disk** and **generates a unique auth key** (no shared secret is baked in).
+
+- `sideshow-rpi-arm64-<ver>.img.xz` — Raspberry Pi (arm64), X11/matchbox
+- `sideshow-debian-amd64-<ver>.img.xz` — x86-64 UEFI, Wayland/labwc
+
+Flash with Raspberry Pi Imager, `dd`, or [balenaEtcher](https://etcher.balena.io/). The images are
+built by [`.github/workflows/images.yml`](.github/workflows/images.yml) (Pi via `arm-runner-action`,
+Debian via `debos`).
+
 ## Display modes
 
 A node's screen is owned by exactly one surface at a time; switching modes tears down the current

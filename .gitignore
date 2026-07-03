@@ -34,3 +34,8 @@ build/
 /CLAUDE.md
 /.claude/
 /domain.txt
+
+# Image build: CI-staged overlay + built appliance images (never committed)
+/agent/images/overlay/
+*.img
+*.img.xz

@@ -6,6 +6,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
@@ -82,26 +84,29 @@ type Config struct {
 	WMCmd         string // window manager launched under the agent's X server (fullscreen + focus only)
 	WMArgs        string // window-manager args
 	CursorHideCmd string // cursor-hider supervised under -start-x (hides the pointer a fresh Xorg parks over the kiosk; empty disables)
+	LockInput     bool   // kiosk input lockdown: strip the compositor's window-switch/menu/close keybinds (labwc + matchbox) and enforce -novtswitch on X11
+	NoLocalInput  bool   // pure display: make the compositor ignore ALL local keyboard/pointer/touch devices (udev + xorg.conf.d); remote (VNC/panel) input still works
 
-	CogCmd         string // the WPE WebKit browser binary for the framebuffer web mode (web + display=kms)
-	CogVideoMode   string // COG_PLATFORM_DRM_VIDEO_MODE for cog (e.g. "1920x1080"); empty = EDID-preferred
-	CogCtlCmd      string // cogctl: cog's D-Bus control client, for in-place navigate/reload of the cog kiosk
-	StateFile      string // persisted display state (rotation + zoom), survives restarts
-	DocsDir        string // directory the document feature may serve local files from (no path escapes)
-	MediaDir       string // uploadable media library dir (images/videos/audio/docs), served at /media
-	AuthKeyFile    string // file holding the UI/API auth key (empty/missing → no auth)
-	AuthKey        string // resolved auth key (from -auth-key or the key file)
-	AllowShutdown   bool // allow POST /api/shutdown (poweroff) — off for unattended nodes
-	AllowCustomRoot bool // allow custom app modes to run as ROOT on the framebuffer (display=kms)
-	NodeLabel      string // human label (e.g. "Lobby screen") for the fleet view
-	NodeGroup      string // group/site for bulk control
-	AutoHostname   bool   // on first boot, rename a stock-default hostname to sideshow-<serial4>
-	Comitup        bool   // start the comitup recovery Wi-Fi AP at boot when there is no network
-	HeartbeatURL   string // POST status here on a timer (the central aggregator); "" = off
-	HeartbeatSec   int    // heartbeat interval (seconds)
-	Watchdog       bool   // run the network/render watchdog
-	WatchdogProbe  string // TCP address the watchdog dials to test connectivity
-	WatchdogReboot bool   // let the watchdog reboot the node when the mode stays down
+	CogCmd          string // the WPE WebKit browser binary for the framebuffer web mode (web + display=kms)
+	CogVideoMode    string // COG_PLATFORM_DRM_VIDEO_MODE for cog (e.g. "1920x1080"); empty = EDID-preferred
+	CogCtlCmd       string // cogctl: cog's D-Bus control client, for in-place navigate/reload of the cog kiosk
+	StateFile       string // persisted display state (rotation + zoom), survives restarts
+	DocsDir         string // directory the document feature may serve local files from (no path escapes)
+	MediaDir        string // uploadable media library dir (images/videos/audio/docs), served at /media
+	AuthKeyFile     string // file holding the UI/API auth key (empty/missing → no auth)
+	AuthKey         string // resolved auth key (from -auth-key or the key file)
+	InitAuthKey     bool   // first-run provisioning: mint a random key at -auth-key-file if it is missing/empty
+	AllowShutdown   bool   // allow POST /api/shutdown (poweroff) — off for unattended nodes
+	AllowCustomRoot bool   // allow custom app modes to run as ROOT on the framebuffer (display=kms)
+	NodeLabel       string // human label (e.g. "Lobby screen") for the fleet view
+	NodeGroup       string // group/site for bulk control
+	AutoHostname    bool   // on first boot, rename a stock-default hostname to sideshow-<serial4>
+	Comitup         bool   // start the comitup recovery Wi-Fi AP at boot when there is no network
+	HeartbeatURL    string // POST status here on a timer (the central aggregator); "" = off
+	HeartbeatSec    int    // heartbeat interval (seconds)
+	Watchdog        bool   // run the network/render watchdog
+	WatchdogProbe   string // TCP address the watchdog dials to test connectivity
+	WatchdogReboot  bool   // let the watchdog reboot the node when the mode stays down
 
 	cred *syscall.Credential // resolved seat-user credential when running as root
 }
@@ -165,6 +170,8 @@ func main() {
 	flag.StringVar(&cfg.WMCmd, "wm-cmd", "matchbox-window-manager", "minimal window manager the agent runs under -start-x (fullscreens + focuses the single client; the X11 analogue of labwc)")
 	flag.StringVar(&cfg.WMArgs, "wm-args", "-use_titlebar no", "args for the window manager")
 	flag.StringVar(&cfg.CursorHideCmd, "cursor-hide-cmd", "unclutter-xfixes --timeout 1 --start-hidden", "cursor-hider the agent supervises under -start-x as a seat-user X client — hides the mouse pointer a fresh Xorg parks over the kiosk (XFIXES-based, no pointer grab so VNC input still works); empty disables. Wayland already hides the idle pointer itself.")
+	flag.BoolVar(&cfg.LockInput, "lock-input", false, "kiosk input lockdown: strip the compositor's window-switch/menu/close keybinds so Alt+Tab / Super / right-click-menu / Alt+F4 are inert (labwc rc.xml with no defaults; empty ~/.matchbox/kbdconfig on X11), and enforce -novtswitch on the agent's Xorg. Off by default (changes local input handling — enable per node). NOTE: does not disable VT switching under Wayland — that is a logind/getty task (see docs/node-api.md).")
+	flag.BoolVar(&cfg.NoLocalInput, "no-local-input", false, "pure display: the compositor ignores ALL local keyboard/mouse/touch devices, so nothing reaches the kiosk (stronger than -lock-input, which leaves the page interactive). Installs a libinput udev rule (+ an xorg.conf.d Ignore on -start-x); remote control (VNC/panel) still works via virtual-input. Off restores local input on the next compositor start.")
 	flag.StringVar(&cfg.CogCmd, "cog-cmd", "cog", "the framebuffer web mode (web + display=kms): WPE WebKit's cog, rendered directly on DRM/KMS with no X/Wayland — a far lighter kiosk for weak nodes")
 	flag.StringVar(&cfg.CogVideoMode, "cog-video-mode", "", "DRM video mode for cog (COG_PLATFORM_DRM_VIDEO_MODE), e.g. 1920x1080; empty = EDID-preferred")
 	flag.StringVar(&cfg.CogCtlCmd, "cogctl-cmd", "cogctl", "cog's D-Bus control client — used to navigate/reload the running cog kiosk in place (cog has no CDP)")
@@ -173,6 +180,7 @@ func main() {
 	flag.StringVar(&cfg.MediaDir, "media-dir", "/var/lib/sideshow/media", "uploadable media library dir (images/videos/audio/docs), served at /media (no path escapes)")
 	flag.StringVar(&cfg.AuthKeyFile, "auth-key-file", "/etc/sideshow/agent.key", "file holding the UI/API key (missing/empty → no auth)")
 	flag.StringVar(&cfg.AuthKey, "auth-key", "", "UI/API key (overrides -auth-key-file; mainly for testing)")
+	flag.BoolVar(&cfg.InitAuthKey, "init-auth-key", false, "first-run provisioning: mint a unique random key at -auth-key-file if it is missing/empty (used by flashed images so no shared secret is ever baked in)")
 	flag.BoolVar(&cfg.AllowShutdown, "allow-shutdown", true, "allow POST /api/shutdown (poweroff); set false on unattended nodes that can't be powered back on remotely")
 	flag.BoolVar(&cfg.AllowCustomRoot, "allow-custom-root", false, "allow custom app modes to run as ROOT on the framebuffer (display=kms) — off by default (arbitrary root program execution behind the auth gate)")
 	flag.StringVar(&cfg.NodeLabel, "node-label", "", "human label for the fleet view, e.g. \"Lobby screen\"")
@@ -195,6 +203,18 @@ func main() {
 	// Shape the kiosk Chromium's defaults (no Translate bar, auto-dismiss cookie
 	// dialogs) via a managed policy, before the first kiosk launch reads it.
 	EnsureChromiumPolicy(cfg)
+	// Place the compositor input-lockdown config (labwc rc.xml / matchbox
+	// kbdconfig) before the first labwc/matchbox launch reads it. No-op unless
+	// -lock-input.
+	EnsureKioskLockdown(cfg)
+	// Pure-display input lockout (udev + xorg.conf.d) is applied from the PERSISTED
+	// policy just after the State manager is constructed below — before the compositor
+	// starts — so the first labwc/Xorg enumerates with the right devices and a reboot
+	// always matches the operator's saved choice, not just the -no-local-input flag.
+	// Reconcile the seat-level VT-switch lockdown (mask login gettys on a non-X
+	// -lock-input node; unmask when off). Off the hot path — it shells out to
+	// systemctl and isn't needed for the kiosk to come up.
+	go ReconcileVTLockdown(cfg)
 
 	sup := NewSupervisor(cfg)
 	apt := NewApt()
@@ -208,6 +228,16 @@ func main() {
 	state := NewState(cfg)
 	library := NewLibrary(cfg)
 	playlist := NewPlaylist(cfg)
+	actions := NewActions(cfg)
+	actions.Seed(state.Info().CustomModes) // migrate legacy app-only custom modes on first run
+	// Local-input policy: the persisted setting is the source of truth; the
+	// -no-local-input flag seeds it once on first boot. Apply it (udev/Xorg rules)
+	// synchronously here — before the compositor starts — and on every boot, so a
+	// reboot always matches the saved policy rather than the flag.
+	if !state.LocalInputSet() {
+		state.SetLocalInput(!cfg.NoLocalInput)
+	}
+	ApplyNoLocalInput(cfg, !state.LocalInputAllowed(!cfg.NoLocalInput))
 	miracast := NewMiracast(cfg, sup, state)
 	sup.SetMiracast(miracast)
 	netmgr := NewNet(cfg)
@@ -217,7 +247,7 @@ func main() {
 	// the display folds per-output content into /api/outputs + /api/status.
 	display.SetContent(content)
 	content.SetDisplay(display)
-	srv := NewServer(cfg, sup, stats, apt, cec, vnc, display, power, content, plymouth, state, library, playlist, miracast, netmgr, setup)
+	srv := NewServer(cfg, sup, stats, apt, cec, vnc, display, power, content, plymouth, state, library, playlist, actions, miracast, netmgr, setup)
 	// After an unattended return-to-base (a console mode the operator quit, or a
 	// crash recovery), re-record what's now on screen so the persisted "active"
 	// matches the screen — else a reboot would relaunch the retired mode.
@@ -228,7 +258,11 @@ func main() {
 	if cfg.CECMonitor {
 		cec.StartMonitor()
 	}
-	display.StartScheduler()
+	// One display timeline: fold any legacy nightly window (display.json) into the
+	// unified weekly scheduler, then run only that scheduler (weekly.go). This retires
+	// the second, independent nightly ticker so the two can't fight over screen power.
+	srv.MigrateNightly(display.legacyNightly())
+	srv.StartScheduler() // weekly time→action schedule + nightly window (weekly.go)
 	content.Start()
 	miracast.Start()
 	NewWatchdog(cfg, sup).Start()
@@ -380,12 +414,26 @@ func (c *Config) resolve() error {
 		}
 	}
 
-	// Auth key: an explicit -auth-key wins; otherwise read the key file if present
-	// (a missing/empty file just means auth is disabled).
+	// Auth key: an explicit -auth-key wins; otherwise read the key file. With
+	// -init-auth-key (first-boot provisioning for flashed images), mint a unique
+	// random key at the file first if it is missing/empty — so every node self-keys
+	// once, before it serves a request, and no shared secret is ever baked into an
+	// image. A missing/empty file without -init-auth-key still just means no auth.
 	if c.AuthKey == "" && c.AuthKeyFile != "" {
+		if c.InitAuthKey {
+			if err := ensureAuthKeyFile(c.AuthKeyFile); err != nil {
+				log.Printf("[auth] init key: %v", err)
+			}
+		}
 		if b, err := os.ReadFile(c.AuthKeyFile); err == nil {
 			c.AuthKey = strings.TrimSpace(string(b))
 		}
+	}
+
+	// Under input lockdown, guarantee the agent's Xorg keeps VT switching off even
+	// if an operator overrode -x-server-args and dropped -novtswitch.
+	if c.LockInput {
+		c.XServerArgs = enforceNoVTSwitch(c.XServerArgs)
 	}
 
 	// Decide whether to drop privileges for children. Only when we are root and
@@ -394,6 +442,28 @@ func (c *Config) resolve() error {
 		groups := supplementaryGroups(u)
 		c.cred = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups}
 	}
+	return nil
+}
+
+// ensureAuthKeyFile mints a unique random key at path if it is missing or empty
+// (dir 0700, file 0600). Used by -init-auth-key for first-boot provisioning, so a
+// flashed image self-keys once per node and never ships a shared secret.
+func ensureAuthKeyFile(path string) error {
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
+		return nil // already keyed
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	var b [24]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(b[:])), 0o600); err != nil {
+		return err
+	}
+	_ = os.Chmod(path, 0o600) // enforce 0600 regardless of umask
+	log.Printf("[auth] minted a per-node key at %s", path)
 	return nil
 }
 
@@ -443,9 +513,9 @@ chmod 755 "$WRAP"
 # color-scheme live) when the agent handed one down, so the app's webview follows
 # system dark/light. Only spin up a private bus when there is no user bus.
 if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-  exec env LIBSEAT_BACKEND="$LIBSEAT_BACKEND" ${WLR_RENDERER:+WLR_RENDERER="$WLR_RENDERER"} labwc -s "$WRAP"
+  exec env LIBSEAT_BACKEND="$LIBSEAT_BACKEND" ${WLR_RENDERER:+WLR_RENDERER="$WLR_RENDERER"} labwc ${SIDESHOW_LABWC_CONFIG:+-C "$SIDESHOW_LABWC_CONFIG"} -s "$WRAP"
 fi
-exec env LIBSEAT_BACKEND="$LIBSEAT_BACKEND" ${WLR_RENDERER:+WLR_RENDERER="$WLR_RENDERER"} dbus-run-session -- labwc -s "$WRAP"
+exec env LIBSEAT_BACKEND="$LIBSEAT_BACKEND" ${WLR_RENDERER:+WLR_RENDERER="$WLR_RENDERER"} dbus-run-session -- labwc ${SIDESHOW_LABWC_CONFIG:+-C "$SIDESHOW_LABWC_CONFIG"} -s "$WRAP"
 `
 
 // modeCommand resolves a mode to the binary + args to run (pure, no side
@@ -656,7 +726,7 @@ func (s *Supervisor) childEnv(m Mode) []string {
 		lang := "LANG=" + getenvOr("LANG", "C.UTF-8")
 		if cfg.WaylandRoot {
 			// Legacy: labwc as root via libseat 'builtin', software (pixman).
-			return []string{
+			env := []string{
 				"HOME=/root", "USER=root", "LOGNAME=root", path, lang,
 				"XDG_RUNTIME_DIR=/run/user/0",
 				"LIBSEAT_BACKEND=builtin",
@@ -665,6 +735,10 @@ func (s *Supervisor) childEnv(m Mode) []string {
 				"PROFILE=/tmp/sideshow-wl-chromium",
 				"DISP_BG=" + cfg.DefaultBg,
 			}
+			if labwcLockActive(cfg) {
+				env = append(env, "SIDESHOW_LABWC_CONFIG="+labwcConfigDir(cfg))
+			}
+			return env
 		}
 		// Default: labwc as the seat user via seatd → wlroots GLES2 GPU renderer
 		// (matches RPi OS's labwc desktop). The seat user must be in the seatd
@@ -680,6 +754,9 @@ func (s *Supervisor) childEnv(m Mode) []string {
 			fmt.Sprintf("CDP_PORT=%d", cfg.WaylandCDPPort),
 			"PROFILE=" + cfg.Home + "/.cache/sideshow-wl-chromium",
 			"DISP_BG=" + cfg.DefaultBg,
+		}
+		if labwcLockActive(cfg) {
+			env = append(env, "SIDESHOW_LABWC_CONFIG="+labwcConfigDir(cfg))
 		}
 		if bus := cfg.RuntimeDir + "/bus"; fileExists(bus) {
 			env = append(env, "DBUS_SESSION_BUS_ADDRESS=unix:path="+bus)

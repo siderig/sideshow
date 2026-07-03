@@ -114,7 +114,10 @@ func (x *XServer) buildSeatClient(name string, argv []string) *exec.Cmd {
 
 // buildWM runs the minimal window manager as the seat user against the X server.
 // matchbox fullscreens + focuses the single client — the only WM service a kiosk
-// needs (X11 has no focus/EWMH-fullscreen policy without a WM).
+// needs (X11 has no focus/EWMH-fullscreen policy without a WM). Its keyboard
+// shortcuts (Alt+Tab/Alt+F4/…), if the build has any, are neutered under
+// -lock-input by the empty ~/.matchbox/kbdconfig the agent writes
+// (EnsureKioskLockdown) — matchbox has no config flag to pass here.
 func (x *XServer) buildWM() *exec.Cmd {
 	return x.buildSeatClient("wm", append([]string{x.cfg.WMCmd}, strings.Fields(x.cfg.WMArgs)...))
 }

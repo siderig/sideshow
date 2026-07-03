@@ -126,6 +126,23 @@ func TestLayoutValidation(t *testing.T) {
 	}
 }
 
+// Asleep reports the primary output's power state; the scheduler uses it to keep
+// @sleep/@wake idempotent (skip re-issuing xrandr/CEC when already in the desired
+// state), which is what stops a daytime restart from yanking a CEC TV's input.
+func TestDisplayAsleep(t *testing.T) {
+	d := newTestDisplay(t)
+	d.setOutputsForTest([]XOutput{{Name: "HDMI-1", Primary: true, Geometry: "1920x1080+0+0"}})
+	if d.Asleep() {
+		t.Error("a fresh display should report awake (asleeps is empty, not persisted)")
+	}
+	d.mu.Lock()
+	d.asleeps["HDMI-1"] = true
+	d.mu.Unlock()
+	if !d.Asleep() {
+		t.Error("primary marked asleep should report Asleep()=true")
+	}
+}
+
 // When no output can be enumerated (xrandr blind under the Wayland kiosk, or a
 // host with no X), /api/outputs must still yield a JSON array — never null, which
 // a client mapping over the body would trip on.

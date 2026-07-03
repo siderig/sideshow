@@ -50,11 +50,11 @@ func TestProtectedAndGeneric(t *testing.T) {
 
 func TestLast4Hex(t *testing.T) {
 	cases := map[string]string{
-		"100000001234abcd":                 "abcd",
-		"ab":                               "00ab",
-		"":                                 "0000",
-		"zzzz":                             "0000", // no hex chars → padded zero
-		"deadBEEF":                         "beef",
+		"100000001234abcd":                  "abcd",
+		"ab":                                "00ab",
+		"":                                  "0000",
+		"zzzz":                              "0000", // no hex chars → padded zero
+		"deadBEEF":                          "beef",
 		"a1b2c3d4e5f6a7b8-c9d0e1f2a3b4c5d6": "c5d6",
 	}
 	for in, want := range cases {
@@ -157,25 +157,56 @@ func TestSortNetworks(t *testing.T) {
 
 func TestWifiConnectValidation(t *testing.T) {
 	n := &Net{cfg: &Config{}}
-	if err := n.WifiConnect("", ""); err == nil {
+	if err := n.WifiConnect("", "", false); err == nil {
 		t.Error("empty ssid should error")
 	}
-	if err := n.WifiConnect("net", "short"); err == nil {
+	if err := n.WifiConnect("net", "short", false); err == nil {
 		t.Error("<8-char psk should error")
 	}
-	if err := n.WifiConnect("net", string(rep('x', 64))); err == nil {
+	if err := n.WifiConnect("net", string(rep('x', 64)), false); err == nil {
 		t.Error(">63-char psk should error")
 	}
-	if err := n.WifiConnect("bad\nssid", "password1"); err == nil {
+	if err := n.WifiConnect("bad\nssid", "password1", false); err == nil {
 		t.Error("ssid with newline should error")
 	}
-	if err := n.WifiConnect("-dashnet", "password1"); err == nil {
+	if err := n.WifiConnect("-dashnet", "password1", false); err == nil {
 		t.Error("ssid starting with '-' should error (nmcli arg-injection guard)")
+	}
+	// The same guards run before the hidden/pre-provision path forks nmcli.
+	if err := n.WifiConnect("", "", true); err == nil {
+		t.Error("empty ssid should error on the hidden path too")
+	}
+	if err := n.WifiConnect("-dashnet", "password1", true); err == nil {
+		t.Error("dash ssid should error on the hidden path too")
 	}
 	// a valid open network passes validation (the nmcli fork is not reached in
 	// the length/charset checks; we only assert the guards don't reject it)
 	// note: we can't assert success without nmcli, so just confirm the psk-length
 	// path accepts an 8-char key by checking it doesn't fail on validation alone.
+}
+
+func TestWifiAuthFailure(t *testing.T) {
+	auth := []string{
+		"Error: Connection activation failed: (7) Secrets were required, but not provided.",
+		"activation failed: reason no-secrets",
+		"802-1X supplicant disconnected",
+		"the password is invalid",
+	}
+	for _, s := range auth {
+		if !wifiAuthFailure(s) {
+			t.Errorf("wifiAuthFailure(%q) = false, want true", s)
+		}
+	}
+	notAuth := []string{
+		"Error: Connection activation failed: device not ready",
+		"Timeout expired",
+		"",
+	}
+	for _, s := range notAuth {
+		if wifiAuthFailure(s) {
+			t.Errorf("wifiAuthFailure(%q) = true, want false", s)
+		}
+	}
 }
 
 func TestHasDefaultRouteParsingShape(t *testing.T) {

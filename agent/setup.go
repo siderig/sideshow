@@ -47,19 +47,19 @@ type SetupFeature struct {
 
 // SetupInfo is the GET /api/setup payload the wizard renders from.
 type SetupInfo struct {
-	Complete     bool           `json:"complete"`
-	Arch         string         `json:"arch"`
-	RAMMB        int            `json:"ram_mb"`
-	Compositor   string         `json:"recommended_compositor"` // x11 | wayland
-	SeatUser     string         `json:"seat_user"`
-	SeatExists   bool           `json:"seat_user_exists"`
-	AptAvailable bool           `json:"apt_available"`
-	AuthEnabled  bool           `json:"auth_enabled"`
+	Complete     bool            `json:"complete"`
+	Arch         string          `json:"arch"`
+	RAMMB        int             `json:"ram_mb"`
+	Compositor   string          `json:"recommended_compositor"` // x11 | wayland
+	SeatUser     string          `json:"seat_user"`
+	SeatExists   bool            `json:"seat_user_exists"`
+	AptAvailable bool            `json:"apt_available"`
+	AuthEnabled  bool            `json:"auth_enabled"`
 	Tools        map[string]bool `json:"tools"`
-	Features     []SetupFeature `json:"features"`
-	Installing   bool           `json:"installing"`
-	LastResult   string         `json:"last_result,omitempty"`
-	LogTail      string         `json:"log_tail,omitempty"`
+	Features     []SetupFeature  `json:"features"`
+	Installing   bool            `json:"installing"`
+	LastResult   string          `json:"last_result,omitempty"`
+	LogTail      string          `json:"log_tail,omitempty"`
 }
 
 func NewSetup(cfg *Config, state *State) *Setup {

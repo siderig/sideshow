@@ -192,4 +192,3 @@ func TestStateDeleteAndClearHistory(t *testing.T) {
 		t.Fatal("active mode should survive a history clear")
 	}
 }
-

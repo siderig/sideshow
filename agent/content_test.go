@@ -13,38 +13,31 @@ func testContent(t *testing.T) *Content {
 	return NewContent(&Config{StateFile: filepath.Join(dir, "display.json"), DocsDir: dir}, testSupervisor(t))
 }
 
-func TestSetSlideshowValidation(t *testing.T) {
+func TestSetDocumentValidation(t *testing.T) {
 	c := testContent(t)
 
-	// Enabling with no valid images → 400.
-	if _, err := c.SetSlideshow([]string{"not-a-url", "relative/path"}, 6, "", "", true); err == nil {
-		t.Error("enabling slideshow with no valid images should error")
+	// An http(s) URL passes through unchanged.
+	info, err := c.SetDocument("https://ex/deck.pdf", 0, true)
+	if err != nil {
+		t.Fatalf("SetDocument(http): %v", err)
 	}
-	if _, err := c.SetSlideshow(nil, 6, "", "", true); err == nil {
-		t.Error("enabling slideshow with empty images should error")
-	}
-	// Disabling with empty images is fine.
-	if _, err := c.SetSlideshow(nil, 6, "", "", false); err != nil {
-		t.Errorf("disabling slideshow should not error: %v", err)
+	if info.Src != "https://ex/deck.pdf" || !info.Enabled {
+		t.Errorf("http document: %+v", info)
 	}
 
-	// Normalization: interval<=0 → default, fit COVER→cover, junk transition→fade.
-	// Local paths are rejected (http(s) only): "/srv/a.png" is dropped.
-	info, err := c.SetSlideshow([]string{"/srv/a.png", "https://ex/b.png"}, 0, "COVER", "wobble", true)
-	if err != nil {
-		t.Fatalf("SetSlideshow: %v", err)
+	// A traversal path is rejected.
+	if _, err := c.SetDocument("../../etc/passwd", 0, true); err == nil {
+		t.Error("traversal document path should error")
 	}
-	if info.IntervalS != defaultSlideInterval {
-		t.Errorf("interval = %d, want default %d", info.IntervalS, defaultSlideInterval)
+
+	// A non-http(s) scheme is rejected.
+	if _, err := c.SetDocument("file:///etc/passwd", 0, true); err == nil {
+		t.Error("file:// document src should error")
 	}
-	if info.Fit != "cover" {
-		t.Errorf("fit = %q, want cover", info.Fit)
-	}
-	if info.Transition != "fade" {
-		t.Errorf("transition = %q, want fade", info.Transition)
-	}
-	if len(info.Images) != 1 || info.Images[0] != "https://ex/b.png" {
-		t.Errorf("images = %v, want only the http(s) URL kept (local path rejected)", info.Images)
+
+	// Disabling with an empty src is fine.
+	if _, err := c.SetDocument("", 0, false); err != nil {
+		t.Errorf("disabling document should not error: %v", err)
 	}
 }
 
@@ -98,54 +91,39 @@ func TestLocalAgentBaseAndAbsDocURL(t *testing.T) {
 	}
 }
 
-func TestSlideshowPersistenceRoundTrip(t *testing.T) {
+func TestDocumentAndReloadPersistenceRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{StateFile: filepath.Join(dir, "display.json"), DocsDir: dir}
 	c := NewContent(cfg, testSupervisor(t))
 
-	if _, err := c.SetSlideshow([]string{"https://ex/a.png"}, 9, "cover", "none", true); err != nil {
-		t.Fatalf("SetSlideshow: %v", err)
+	if _, err := c.SetDocument("https://ex/deck.pdf", 12, true); err != nil {
+		t.Fatalf("SetDocument: %v", err)
 	}
-	c.SetReload(15) // coexists with the slideshow block
+	c.SetReload(15)
 
 	// Re-load from the same dir.
 	c2 := NewContent(cfg, testSupervisor(t))
-	got := c2.SlideshowInfo()
-	if !got.Enabled || got.IntervalS != 9 || got.Fit != "cover" || got.Transition != "none" {
-		t.Errorf("slideshow did not survive reload: %+v", got)
-	}
-	if len(got.Images) != 1 || got.Images[0] != "https://ex/a.png" {
-		t.Errorf("images did not survive reload: %v", got.Images)
+	got := c2.DocInfo()
+	if !got.Enabled || got.Src != "https://ex/deck.pdf" || got.AutoAdvanceS != 12 {
+		t.Errorf("document did not survive reload: %+v", got)
 	}
 	if c2.Info().ReloadMin != 15 {
 		t.Errorf("reload did not survive reload: %d", c2.Info().ReloadMin)
 	}
 }
 
-// Enabling slideshow/document should disable the playlist and vice versa, so a
-// single page owner is enforced.
-func TestContentMutualExclusion(t *testing.T) {
+// DisableOwners clears the document page-owner so a direct navigation / mode
+// switch takes the screen without a timer re-asserting the document.
+func TestDisableOwnersClearsDocument(t *testing.T) {
 	c := testContent(t)
-	if err := c.SetPlaylist([]string{"https://ex/1", "https://ex/2"}, 30, true); err != nil {
-		t.Fatalf("SetPlaylist: %v", err)
+	if _, err := c.SetDocument("https://ex/deck.pdf", 0, true); err != nil {
+		t.Fatalf("SetDocument: %v", err)
 	}
-	if !c.Info().Enabled {
-		t.Fatal("playlist should be enabled")
+	if !c.DocInfo().Enabled {
+		t.Fatal("document should be enabled")
 	}
-	if _, err := c.SetSlideshow([]string{"https://ex/a.png"}, 6, "", "", true); err != nil {
-		t.Fatalf("SetSlideshow: %v", err)
-	}
-	if c.Info().Enabled {
-		t.Error("enabling slideshow should disable the playlist")
-	}
-	if !c.SlideshowInfo().Enabled {
-		t.Error("slideshow should be enabled")
-	}
-	// Re-enabling the playlist disables the slideshow.
-	if err := c.SetPlaylist([]string{"https://ex/1", "https://ex/2"}, 30, true); err != nil {
-		t.Fatalf("SetPlaylist: %v", err)
-	}
-	if c.SlideshowInfo().Enabled {
-		t.Error("re-enabling the playlist should disable the slideshow")
+	c.DisableOwners()
+	if c.DocInfo().Enabled {
+		t.Error("DisableOwners should clear the document owner")
 	}
 }

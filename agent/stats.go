@@ -23,11 +23,12 @@ type SysStats struct {
 	Mem        MemStats    `json:"mem"`
 	Disk       DiskStats   `json:"disk"`
 	TempC      float64     `json:"temp_c,omitempty"`
-	Throttled  string      `json:"throttled,omitempty"`  // vcgencmd get_throttled, e.g. "0x0"
-	UnderVolt  bool        `json:"undervolt"`            // throttle bit 0/16 set (now / ever)
-	Model      string      `json:"model,omitempty"`      // /proc/device-tree/model
-	Resolution string      `json:"resolution,omitempty"` // current X output mode, e.g. 1920x1080
-	Display    DisplayInfo `json:"display"`              // rotation + kiosk zoom
+	Throttled  string      `json:"throttled,omitempty"`      // vcgencmd get_throttled, e.g. "0x0"
+	ThrottleTx string      `json:"throttled_text,omitempty"` // human decode, e.g. "since boot: ARM frequency capped"
+	UnderVolt  bool        `json:"undervolt"`                // throttle bit 0/16 set (now / ever)
+	Model      string      `json:"model,omitempty"`          // /proc/device-tree/model
+	Resolution string      `json:"resolution,omitempty"`     // current X output mode, e.g. 1920x1080
+	Display    DisplayInfo `json:"display"`                  // rotation + kiosk zoom
 	Upgrades   AptStatus   `json:"upgrades"`
 }
 
@@ -141,6 +142,7 @@ func (s *Stats) Snapshot() SysStats {
 		Disk:       readDisk("/"),
 		TempC:      round1(readTempC()),
 		Throttled:  thr,
+		ThrottleTx: decodeThrottled(thr),
 		UnderVolt:  ever || throttleUnderVolt(thr),
 		Model:      s.model,
 		Resolution: res,

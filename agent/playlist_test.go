@@ -15,11 +15,11 @@ func TestPlaylistSanitizeDropsBadItems(t *testing.T) {
 	p, _ := newTestPlaylist(t)
 	info := p.Set([]PlaylistItem{
 		{Kind: "image", Src: "lobby/a.jpg"},        // ok (library path)
-		{Kind: "video", Src: "https://x/v.mp4"},     // ok (url)
-		{Kind: "bad", Src: "x"},                     // bad kind → drop
-		{Kind: "image", Src: ""},                    // empty src → drop
-		{Kind: "doc", Src: "../etc/passwd"},         // traversal → drop
-		{Kind: "image", Src: "file:///etc/shadow"},  // other scheme → drop
+		{Kind: "video", Src: "https://x/v.mp4"},    // ok (url)
+		{Kind: "bad", Src: "x"},                    // bad kind → drop
+		{Kind: "image", Src: ""},                   // empty src → drop
+		{Kind: "doc", Src: "../etc/passwd"},        // traversal → drop
+		{Kind: "image", Src: "file:///etc/shadow"}, // other scheme → drop
 	}, 5, true, false, "fade")
 	if len(info.Items) != 2 {
 		t.Fatalf("want 2 valid items, got %d: %+v", len(info.Items), info.Items)

@@ -1,0 +1,17 @@
+[Unit]
+Description=Sideshow first-boot root filesystem expansion (grow to fill the media)
+DefaultDependencies=no
+After=systemd-remount-fs.service local-fs.target
+Before=sideshow-agent.service sysinit.target
+# Runs once: the ExecStartPost sentinel makes it skip on every later boot.
+ConditionPathExists=!/var/lib/sideshow/.rootfs-expanded
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/sideshow/sideshow-expand-rootfs.sh
+# Mark done even if the resize soft-failed, so it never loops (matches Pi/Armbian).
+ExecStartPost=/bin/sh -c 'mkdir -p /var/lib/sideshow && : > /var/lib/sideshow/.rootfs-expanded'
+
+[Install]
+WantedBy=sysinit.target

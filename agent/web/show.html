@@ -37,7 +37,9 @@ function clearTimers() { if (timer) { clearTimeout(timer); timer = null; } if (s
 function advance(g) { if (g === gen) go(); }
 
 async function reload() {
-  try { const r = await fetch("/api/playlist-media", { cache: "no-store" }); if (r.ok) cfg = await r.json(); } catch (e) {}
+  const a = new URLSearchParams(location.search).get("action");
+  const url = a ? "/api/playlist-media?action=" + encodeURIComponent(a) : "/api/playlist-media";
+  try { const r = await fetch(url, { cache: "no-store" }); if (r.ok) cfg = await r.json(); } catch (e) {}
   const items = (cfg && cfg.items) || [];
   order = items.map((_, i) => i);
   if (cfg && cfg.shuffle) for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }

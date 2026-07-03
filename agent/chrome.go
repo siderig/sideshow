@@ -340,46 +340,6 @@ func (c *Chrome) ClearMessage() error {
 	return c.eval(`(function(){var x=document.getElementById('__sideshow_msg');if(x)x.remove();})()`)
 }
 
-// slideshowJS is a self-contained overlay builder injected over the running web
-// kiosk: a fixed full-screen container (one z-index below ShowMessage's banner so
-// maintenance notices stay on top), two cross-fading <img> layers, and a
-// page-side setInterval. A config hash on window.__dispSlideshow makes a re-inject
-// with identical config a no-op (so the 5s liveness re-assert is idempotent);
-// .stop cleanly removes it. Called as (slideshowJS)(config).
-const slideshowJS = `function(cfg){
- cfg=cfg||{};
- var imgs=cfg.images||[],iv=cfg.interval||6000,fit=cfg.fit||'contain',tr=cfg.transition||'fade';
- var key=JSON.stringify([imgs,iv,fit,tr]);
- var w=window.__dispSlideshow;
- if(w&&w.key===key&&document.getElementById('__disp_slideshow'))return;
- if(w&&w.stop)w.stop();
- if(!imgs.length)return;
- var box=document.createElement('div');box.id='__disp_slideshow';
- box.style.cssText='position:fixed;inset:0;z-index:2147483646;background:#000;overflow:hidden;margin:0;padding:0';
- var fade=(tr==='fade');
- function mk(){var im=document.createElement('img');
-  im.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:'+(fit==='cover'?'cover':'contain')+';opacity:0;'+(fade?'transition:opacity .6s ease;':'');
-  box.appendChild(im);return im;}
- var a=mk(),b=mk(),cur=a,idx=0;
- (document.body||document.documentElement).appendChild(box);
- function show(i){var nxt=(cur===a)?b:a;nxt.src=imgs[i];nxt.style.opacity='1';cur.style.opacity='0';cur=nxt;}
- show(0);
- var t=setInterval(function(){idx=(idx+1)%imgs.length;show(idx);},iv);
- window.__dispSlideshow={key:key,stop:function(){clearInterval(t);var x=document.getElementById('__disp_slideshow');if(x)x.remove();window.__dispSlideshow=null;}};
-}`
-
-// RunSlideshow injects (or refreshes) the on-page slideshow overlay over the
-// running web kiosk. Idempotent: re-running with identical config is a no-op.
-func (c *Chrome) RunSlideshow(images []string, intervalMs int, fit, transition string) error {
-	cfg, _ := json.Marshal(map[string]any{"images": images, "interval": intervalMs, "fit": fit, "transition": transition})
-	return c.eval("(" + slideshowJS + ")(" + string(cfg) + ")")
-}
-
-// StopSlideshow removes the on-page slideshow overlay if present.
-func (c *Chrome) StopSlideshow() error {
-	return c.eval(`(function(){var w=window.__dispSlideshow;if(w&&w.stop)w.stop();})()`)
-}
-
 // ScrollPage advances the document one viewport down, wrapping back to the top
 // at the bottom — the document feature's auto-advance.
 func (c *Chrome) ScrollPage() error {

@@ -17,7 +17,6 @@ type DisplayInfo struct {
 	Rotation    int          `json:"rotation"`          // primary: 0 / 90 / 180 / 270 degrees
 	ZoomPercent int          `json:"zoom_percent"`      // 100 = no zoom (global)
 	Asleep      bool         `json:"asleep"`            // the primary output is powered off (sleeping)
-	Schedule    ScheduleInfo `json:"schedule"`          // nightly sleep/wake schedule
 	Layout      string       `json:"layout,omitempty"`  // single | mirror | extend
 	Outputs     []OutputInfo `json:"outputs,omitempty"` // per-output view (multi-display)
 }
@@ -35,13 +34,6 @@ type OutputInfo struct {
 	// persisted + reported but not yet rendered (rendering deferred). The flag
 	// keeps the API honest for the future central panel.
 	Rendered bool `json:"rendered"`
-}
-
-// ScheduleInfo is the nightly sleep/wake schedule (node-local time, HH:MM).
-type ScheduleInfo struct {
-	Enabled bool   `json:"enabled"`
-	Sleep   string `json:"sleep,omitempty"` // turn the screen off at this time
-	Wake    string `json:"wake,omitempty"`  // turn it back on at this time
 }
 
 // Display owns the rotation + kiosk-zoom + layout state, persists it across
@@ -66,11 +58,13 @@ type Display struct {
 	asleeps      map[string]bool // output name → powered off (not persisted)
 	zoom         float64         // 1.0 = 100% (global)
 	primary      string          // cached primary output name ("" until enumerated)
-	layout       string          // single | mirror | extend
+	layout string // single | mirror | extend
+	// Legacy nightly sleep/wake window — read from display.json for a one-time
+	// migration into the unified weekly Scheduler (see legacyNightly / MigrateNightly);
+	// no longer enforced or re-persisted here.
 	schedEnabled bool
 	schedSleep   string // "HH:MM" node-local
 	schedWake    string // "HH:MM" node-local
-	lastDesired  *bool  // scheduler edge-detection (nil = not yet evaluated)
 
 	content *Content // cross-link for per-output content in Info()/Outputs()
 
@@ -83,10 +77,12 @@ type persistedDisplay struct {
 	Rotation     int            `json:"rotation"` // legacy: primary's rotation (kept for downgrade)
 	Rotations    map[string]int `json:"rotations,omitempty"`
 	Layout       string         `json:"layout,omitempty"`
-	Zoom         float64        `json:"zoom"`
-	SchedEnabled bool           `json:"sched_enabled"`
-	SchedSleep   string         `json:"sched_sleep"`
-	SchedWake    string         `json:"sched_wake"`
+	Zoom float64 `json:"zoom"`
+	// Legacy nightly window: read for migration, no longer written (omitempty drops
+	// the keys from display.json once the file is next rewritten).
+	SchedEnabled bool   `json:"sched_enabled,omitempty"`
+	SchedSleep   string `json:"sched_sleep,omitempty"`
+	SchedWake    string `json:"sched_wake,omitempty"`
 }
 
 func NewDisplay(cfg *Config, sup *Supervisor, cec *CEC) *Display {
@@ -151,11 +147,10 @@ func (d *Display) save() {
 		rotations[k] = v
 	}
 	p := persistedDisplay{
-		Rotation:     d.primaryRotationLocked(), // legacy scalar = the primary's rotation
-		Rotations:    rotations,
-		Layout:       d.layout,
-		Zoom:         d.zoom,
-		SchedEnabled: d.schedEnabled, SchedSleep: d.schedSleep, SchedWake: d.schedWake,
+		Rotation:  d.primaryRotationLocked(), // legacy scalar = the primary's rotation
+		Rotations: rotations,
+		Layout:    d.layout,
+		Zoom:      d.zoom,
 	}
 	d.mu.Unlock()
 	b, _ := json.MarshalIndent(p, "", "  ")
@@ -493,7 +488,6 @@ func (d *Display) Info() DisplayInfo {
 		Rotation:    d.primaryRotationLocked(),
 		ZoomPercent: int(d.zoom*100 + 0.5),
 		Asleep:      d.asleeps[primary] || d.asleeps[""],
-		Schedule:    ScheduleInfo{Enabled: d.schedEnabled, Sleep: d.schedSleep, Wake: d.schedWake},
 		Layout:      d.layout,
 	}
 	info.Outputs = d.outputsLocked(primary)
@@ -577,78 +571,25 @@ func (d *Display) setOutputsForTest(outs []XOutput) {
 	d.mu.Unlock()
 }
 
-// SetSchedule configures (or disables) the nightly sleep/wake schedule, persists
-// it, and re-arms the scheduler. Times are node-local "HH:MM".
-func (d *Display) SetSchedule(enabled bool, sleep, wake string) error {
-	if enabled {
-		if _, ok := parseHHMM(sleep); !ok {
-			return &apiError{code: 400, err: fmt.Errorf("sleep time must be HH:MM (24h)")}
-		}
-		if _, ok := parseHHMM(wake); !ok {
-			return &apiError{code: 400, err: fmt.Errorf("wake time must be HH:MM (24h)")}
-		}
-		if sleep == wake {
-			return &apiError{code: 400, err: fmt.Errorf("sleep and wake times cannot be equal")}
-		}
-	}
+// legacyNightly returns the nightly sleep/wake window loaded from display.json, for
+// a one-time migration into the unified weekly Scheduler (see Scheduler.MigrateNightly).
+// The window is no longer enforced or re-persisted by Display.
+func (d *Display) legacyNightly() (enabled bool, sleep, wake string) {
 	d.mu.Lock()
-	d.schedEnabled = enabled
-	d.schedSleep = sleep
-	d.schedWake = wake
-	d.lastDesired = nil // re-evaluate against the new schedule on the next tick
-	d.mu.Unlock()
-	d.save()
-	return nil
+	defer d.mu.Unlock()
+	return d.schedEnabled, d.schedSleep, d.schedWake
 }
 
-// StartScheduler runs the nightly sleep/wake enforcement loop. The first tick is
-// delayed so it can't stack a Screen() change onto the cold-boot window.
-func (d *Display) StartScheduler() {
-	go func() {
-		time.Sleep(60 * time.Second)
-		d.scheduleTick()
-		t := time.NewTicker(30 * time.Second)
-		defer t.Stop()
-		for range t.C {
-			d.scheduleTick()
-		}
-	}()
-}
-
-// scheduleTick edge-triggers a sleep/wake when the schedule's desired state
-// changes (so a manual override between transitions sticks), and only acts when
-// the actual screen state actually disagrees (no redundant xrandr). It targets
-// the primary output (the schedule is whole-screen).
-func (d *Display) scheduleTick() {
+// Asleep reports whether the primary output is currently powered off. The scheduler
+// uses it to make the @sleep/@wake transitions idempotent: a boot/restart/Set that
+// re-resolves to a sleep/wake it has already achieved must NOT re-issue xrandr/CEC
+// (which would yank a CEC TV's input back to this node on an already-awake screen).
+// This restores the guard the retired nightly ticker had (desired == actual → skip).
+func (d *Display) Asleep() bool {
 	primary := d.PrimaryName()
 	d.mu.Lock()
-	en, s, w := d.schedEnabled, d.schedSleep, d.schedWake
-	d.mu.Unlock()
-	if !en || s == "" || w == "" {
-		return
-	}
-	desiredAsleep := inSleepWindow(time.Now(), s, w)
-
-	d.mu.Lock()
-	changed := d.lastDesired == nil || *d.lastDesired != desiredAsleep
-	dv := desiredAsleep
-	d.lastDesired = &dv
-	actuallyAsleep := d.asleeps[primary] || d.asleeps[""]
-	d.mu.Unlock()
-	if !changed || desiredAsleep == actuallyAsleep {
-		return
-	}
-
-	on := !desiredAsleep
-	if err := d.Screen("", on); err != nil {
-		log.Printf("[schedule] set screen on=%v failed: %v", on, err)
-		return
-	}
-	state := "asleep"
-	if on {
-		state = "on"
-	}
-	log.Printf("[schedule] %s → screen %s", time.Now().Format("15:04"), state)
+	defer d.mu.Unlock()
+	return d.asleeps[primary] || d.asleeps[""]
 }
 
 // parseHHMM parses a 24-hour "HH:MM" into minutes-since-midnight.
@@ -664,19 +605,4 @@ func parseHHMM(s string) (int, bool) {
 		return 0, false
 	}
 	return h*60 + m, true
-}
-
-// inSleepWindow reports whether now falls in [sleep, wake) (node-local),
-// handling a window that wraps past midnight (e.g. 22:00 → 07:00).
-func inSleepWindow(now time.Time, sleep, wake string) bool {
-	sM, ok1 := parseHHMM(sleep)
-	wM, ok2 := parseHHMM(wake)
-	if !ok1 || !ok2 || sM == wM {
-		return false
-	}
-	nowM := now.Hour()*60 + now.Minute()
-	if sM < wM {
-		return nowM >= sM && nowM < wM
-	}
-	return nowM >= sM || nowM < wM // wraps midnight
 }

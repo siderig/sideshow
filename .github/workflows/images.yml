@@ -1,0 +1,123 @@
+name: images
+
+# Build preconfigured, flashable sideshow appliance images and attach them to the
+# release. Triggered when a release is published, or manually against a tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the images to (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write            # required to upload assets to the release
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  # ---------- Raspberry Pi OS (arm64) — the well-trodden path ----------------
+  raspberry-pi:
+    name: Raspberry Pi OS (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - name: Build agent (arm64)
+        run: |
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+            go build -C agent -trimpath -ldflags "-s -w -X main.version=${TAG}" \
+            -o "$GITHUB_WORKSPACE/dist/sideshow-agent-arm64" .
+
+      - name: Build Raspberry Pi OS arm64 image
+        id: build
+        uses: pguyot/arm-runner-action@v2
+        with:
+          base_image: raspios_lite_arm64:latest
+          cpu: cortex-a53
+          image_additional_mb: 3072          # room for chromium/labwc/mpv/uxplay + -dev + gcc
+          optimize_image: true               # zero-fill free space so xz compresses well
+          copy_repository_path: /opt/sideshow-src
+          commands: |
+            set -eu
+            COMPOSITOR=x11 SEATUSER=sideshow \
+              AGENT_BIN=/opt/sideshow-src/dist/sideshow-agent-arm64 \
+              SRC_DIR=/opt/sideshow-src/agent \
+              sh /opt/sideshow-src/agent/scripts/image-provision.sh
+            rm -rf /opt/sideshow-src        # don't ship the repo/.git inside the image
+
+      - name: Compress + checksum
+        run: |
+          out="sideshow-rpi-arm64-${TAG}.img"
+          mv "${{ steps.build.outputs.image }}" "$out"
+          xz -T0 -6 -v "$out"
+          sha256sum "$out.xz" > "$out.xz.sha256"
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2.6.2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: |
+            sideshow-rpi-arm64-*.img.xz
+            sideshow-rpi-arm64-*.img.xz.sha256
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------- Debian (amd64) — bootable UEFI image via debos ----------------
+  # Least-exercised path; expect first-run shakeout (bootloader/partitioning).
+  debian-amd64:
+    name: Debian (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - name: Build agent (amd64)
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -C agent -trimpath -ldflags "-s -w -X main.version=${TAG}" \
+            -o "$GITHUB_WORKSPACE/dist/sideshow-agent-amd64" .
+
+      - name: Stage overlay (agent sources + binary → /opt/sideshow-src)
+        run: |
+          O=agent/images/overlay/opt/sideshow-src
+          mkdir -p "$O/agent" "$O/dist"
+          cp -a agent/scripts agent/kmsshot agent/assets "$O/agent/"
+          cp dist/sideshow-agent-amd64 "$O/dist/"
+
+      - name: Build Debian amd64 image (debos)
+        run: |
+          docker run --rm --privileged --device /dev/kvm \
+            -v "$PWD/agent/images:/recipes" -w /recipes \
+            ghcr.io/go-debos/debos:latest \
+            -t image:sideshow-debian-amd64-${TAG}.img \
+            debian-amd64.yaml
+
+      - name: Compress + checksum
+        run: |
+          cd agent/images
+          xz -T0 -6 -v "sideshow-debian-amd64-${TAG}.img"
+          sha256sum "sideshow-debian-amd64-${TAG}.img.xz" > "sideshow-debian-amd64-${TAG}.img.xz.sha256"
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2.6.2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: |
+            agent/images/sideshow-debian-amd64-*.img.xz
+            agent/images/sideshow-debian-amd64-*.img.xz.sha256
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

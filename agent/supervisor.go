@@ -749,38 +749,6 @@ func (s *Supervisor) NavigateIfWeb(url string) bool {
 	return true
 }
 
-// RunSlideshowIfWeb injects the on-page slideshow overlay — but ONLY if the
-// running web base is the surface on screen, atomically under the switch token
-// (mirroring NavigateIfWeb). Returns false (skip, retry later) when the surface
-// isn't a running web kiosk, a switch is in progress, or CDP isn't attached.
-func (s *Supervisor) RunSlideshowIfWeb(images []string, intervalMs int, fit, transition string) bool {
-	s.mu.Lock()
-	if s.switching || s.fgRunner != nil || s.runner == nil || s.runner.modeType() != ModeWeb || !s.runner.alive() {
-		s.mu.Unlock()
-		return false
-	}
-	s.switching = true
-	s.mu.Unlock()
-	defer func() { s.mu.Lock(); s.switching = false; s.mu.Unlock() }()
-	if !s.chrome.Attached() {
-		return false
-	}
-	if err := s.chrome.RunSlideshow(images, intervalMs, fit, transition); err != nil {
-		log.Printf("[slideshow] inject: %v", err)
-		return false
-	}
-	return true
-}
-
-// StopSlideshowIfWeb removes the slideshow overlay best-effort (no-op when CDP
-// isn't attached). Safe to call regardless of the on-screen mode.
-func (s *Supervisor) StopSlideshowIfWeb() {
-	if !s.chrome.Attached() {
-		return
-	}
-	_ = s.chrome.StopSlideshow()
-}
-
 // AdvanceDocument scrolls the kiosk page one viewport down (the document
 // auto-advance) — only if a running web kiosk is on screen, under the switch
 // token. Returns false to retry later.

@@ -12,14 +12,6 @@ import (
 //go:embed web/index.html
 var indexHTML []byte
 
-// slideshowHTML is the self-contained slideshow viewer page, served at
-// /slideshow. It reads its config from /api/slideshow (or an inline ?config=)
-// so an output can point a browser at it directly — the standalone counterpart
-// to the CDP-injected overlay the agent drives onto the running kiosk.
-//
-//go:embed web/slideshow.html
-var slideshowHTML []byte
-
 // showHTML is the self-contained mixed-media playlist player, served at /show.
 // The kiosk is pointed at it; it fetches /api/playlist-media and advances through
 // images/videos/audio/docs client-side (interval, or a media element's end).
