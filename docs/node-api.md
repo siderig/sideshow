@@ -260,7 +260,7 @@ cached `Info()` of every manager. Fields:
   "state":     { … },        // StateInfo (active mode + setup_complete + history + custom_modes)
   "playlist":  { "count": 3, "show_url": "http://127.0.0.1/show" }, // cheap summary; items on demand
   "miracast":  { … },        // MiracastInfo
-  "net":       { … },        // NetInfo (hostname/suggested/can_rename/protected/comitup/wifi.supported)
+  "net":       { … },        // NetInfo (hostname/suggested/can_rename/protected/comitup/wifi.supported/link)
   "caps":      { "shutdown": true, "miracast": false }  // agent-level gates for showing/hiding controls
 }
 ```
@@ -682,8 +682,10 @@ The snapshot carries only the cheap `{ count, show_url }` summary; the full item
 - `POST /api/cec {"action":"volume-up|volume-down|mute"}` — TV/amp volume over CEC; `-cec-monitor`
   watches the bus to learn when the TV is switched on/off by its own remote.
 - **Heartbeat** (`-heartbeat-url`): the node POSTs a compact status+stats payload to a central
-  aggregator on a timer (the bridge to the fleet panel). `-node-label`/`-node-group` add identity,
-  surfaced in `/api/status`.
+  aggregator on a timer (the bridge to the fleet panel). The payload also carries a `net` block
+  (`{ online, iface, ip, wireless, ssid, signal }`, the same fork-free `link` summary the System box
+  shows) so the panel can list each node's address and Wi-Fi strength. `-node-label`/`-node-group`
+  add identity, surfaced in `/api/status`.
 
 ### Boot splash (Plymouth)
 
@@ -726,10 +728,15 @@ active mode.
 ### Node identity & network
 
 - `GET /api/hostname` → the node-identity block (same as the snapshot's `net`):
-  `{ hostname, suggested, can_rename, protected, comitup, wifi:{ supported } }`. `suggested` is the
-  `sideshow-<serial4>` default name; `protected:true` means the current name is load-bearing in the
-  deploy convention (`disp`/`disp-deb-air`) and a rename is refused; `can_rename` = `hostnamectl` is
-  present.
+  `{ hostname, suggested, can_rename, protected, comitup, wifi:{ supported }, link }`. `suggested` is
+  the `sideshow-<serial4>` default name; `protected:true` means the current name is load-bearing in
+  the deploy convention (`disp`/`disp-deb-air`) and a rename is refused; `can_rename` = `hostnamectl`
+  is present. `link` is the **live connectivity summary** —
+  `{ online, iface, ip, wireless, ssid, signal }` — for the current (default-route) interface: `ip`
+  its IPv4, `wireless` whether it is a Wi-Fi device, and, on Wi-Fi, the associated `ssid` and a `0–100`
+  `signal`. It is read **fork-free** (from `/proc/net/{route,wireless}`, the Go `net` stdlib, and the
+  `SIOCGIWESSID` ioctl — a syscall, not a subprocess) so it rides the frequent snapshot poll; the
+  webUI shows it on the System box. A wired or offline node reports `wireless:false` and no `signal`.
 - `POST /api/hostname {"name":"…"}` — renames the node (`hostnamectl set-hostname`), validated as an
   RFC-1123 label (1–63 chars, alphanumeric ends, hyphens inside). Takes effect live — the header
   updates on the next poll, no agent restart. `400` on an invalid label, a protected current name, or

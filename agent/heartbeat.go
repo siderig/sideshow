@@ -46,6 +46,7 @@ func (h *Heartbeat) send() {
 	ms := h.sup.Status()
 	st := h.stats.Snapshot()
 	node := h.net.Hostname()
+	ln := h.net.Live()
 	payload := map[string]any{
 		"node":         node,
 		"label":        h.cfg.NodeLabel,
@@ -59,6 +60,10 @@ func (h *Heartbeat) send() {
 			"mem_percent": st.Mem.Percent, "disk_percent": st.Disk.Percent,
 			"temp_c": st.TempC, "undervolt": st.UnderVolt,
 			"resolution": st.Resolution, "upgrades": st.Upgrades.Available,
+		},
+		"net": map[string]any{
+			"online": ln.Online, "iface": ln.Iface, "ip": ln.IP,
+			"wireless": ln.Wireless, "ssid": ln.SSID, "signal": ln.Signal,
 		},
 	}
 	b, _ := json.Marshal(payload)

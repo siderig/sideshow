@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,6 +57,22 @@ type NetInfo struct {
 	Protected bool     `json:"protected"`  // current name is load-bearing (deploy convention) → rename refused
 	Comitup   bool     `json:"comitup"`    // comitup recovery-AP available
 	Wifi      WifiCaps `json:"wifi"`
+	Link      LiveNet  `json:"link"` // live connectivity (IP / online / Wi-Fi signal), fork-free
+}
+
+// LiveNet is the live connectivity summary for the System box (and the fleet
+// heartbeat): the primary — default-route — interface and its IP/online state,
+// plus, when that interface is wireless, the associated SSID and signal strength.
+// Every field is read fork-free (from /proc + the Go net stdlib; the SSID via a
+// WEXT ioctl — a syscall, not a subprocess) so it can ride the frequent snapshot
+// poll without breaking Info()'s no-subprocess contract.
+type LiveNet struct {
+	Online   bool   `json:"online"`           // a default route exists
+	Iface    string `json:"iface,omitempty"`  // primary interface, e.g. eth0 / wlp3s0
+	IP       string `json:"ip,omitempty"`     // its IPv4 address
+	Wireless bool   `json:"wireless"`         // the primary interface is a Wi-Fi device
+	SSID     string `json:"ssid,omitempty"`   // associated SSID (wireless only)
+	Signal   int    `json:"signal,omitempty"` // 0–100 link strength (wireless only)
 }
 
 // WifiCaps is the cheap Wi-Fi capability summary in the snapshot (no scan).
@@ -188,7 +205,35 @@ func (n *Net) Info() NetInfo {
 		Protected: protectedHostnames[strings.ToLower(host)],
 		Comitup:   n.comitup,
 		Wifi:      WifiCaps{Supported: n.wifiSupported},
+		Link:      n.Live(),
 	}
+}
+
+// Live returns the fork-free live connectivity summary (see LiveNet). It reads
+// the primary interface from /proc/net/route, its IPv4 from the Go net stdlib,
+// and — when that interface is wireless — the signal from /proc/net/wireless and
+// the SSID from a WEXT ioctl. No subprocess, so it is safe on the snapshot poll.
+func (n *Net) Live() LiveNet {
+	l := LiveNet{}
+	if iface := defaultRouteIface(); iface != "" {
+		l.Iface, l.Online = iface, true
+		l.IP = ifaceIPv4(iface)
+	} else {
+		// No IPv4 default route: still surface an IP if any interface has one, and
+		// count an IPv6-only default route as online.
+		l.Online = hasDefaultRouteV6()
+		if fi, ip := firstGlobalIPv4(); fi != "" {
+			l.Iface, l.IP = fi, ip
+		}
+	}
+	if l.Iface != "" && isWirelessIface(l.Iface) {
+		l.Wireless = true
+		if sig, ok := procWirelessSignal(l.Iface); ok {
+			l.Signal = sig
+		}
+		l.SSID = wifiSSID(l.Iface)
+	}
+	return l
 }
 
 // SetHostname validates + applies a new hostname (hostnamectl set-hostname),
@@ -300,10 +345,11 @@ func parseWifiScan(out string, saved map[string]bool) ([]WifiNetwork, string) {
 }
 
 // WifiConnect joins a network (adding/activating a connection). An empty psk
-// connects to an open network. When hidden is set, or for a network that is not in
-// range yet, a saved profile is created instead so NetworkManager probes for the
-// SSID and auto-connects when it appears (see wifiAddHidden). The psk is passed as
-// a separate argv element (no shell) and never logged.
+// connects to an open network. A hidden network, or one that is simply not in
+// range yet, can't be joined with `dev wifi connect` (that only sees SSIDs the
+// live scan found) — so a saved autoconnect profile is created instead and
+// NetworkManager joins it when the AP appears (see wifiSaveProfile). The psk is
+// passed as a separate argv element (no shell) and never logged.
 func (n *Net) WifiConnect(ssid, psk string, hidden bool) error {
 	ssid = strings.TrimSpace(ssid)
 	if ssid == "" {
@@ -323,11 +369,10 @@ func (n *Net) WifiConnect(ssid, psk string, hidden bool) error {
 	if psk != "" && (len(psk) < 8 || len(psk) > 63 || strings.ContainsAny(psk, "\x00\n\r")) {
 		return fmt.Errorf("a Wi-Fi password must be 8–63 characters")
 	}
-	// A hidden or not-yet-in-range network can't be joined with `dev wifi connect`
-	// (that only sees SSIDs the scan found) — save a profile that carries the SSID
-	// and the hidden flag so it auto-connects later.
+	// A hidden network never appears in a passive scan — save a probing profile
+	// (802-11-wireless.hidden=yes) straight away and try to bring it up now.
 	if hidden {
-		return n.wifiAddHidden(ssid, psk)
+		return n.wifiSaveProfile(ssid, psk, true, true)
 	}
 	args := []string{"dev", "wifi", "connect", ssid}
 	if psk != "" {
@@ -338,32 +383,52 @@ func (n *Net) WifiConnect(ssid, psk string, hidden bool) error {
 	}
 	// nmcli can block while associating/DHCP-ing → a generous bound.
 	out, err := runShort(45*time.Second, "nmcli", args...)
-	if err != nil {
-		return fmt.Errorf("connect failed: %s", firstLine(out))
+	if err == nil {
+		log.Printf("[net] wifi connect to %q ok", ssid)
+		return nil
 	}
-	log.Printf("[net] wifi connect to %q ok", ssid)
-	return nil
+	// Out of range? `dev wifi connect` only joins SSIDs the scan currently sees, so
+	// a network that just isn't here yet fails with "No network with SSID … found".
+	// Save a NON-hidden autoconnect profile (it broadcasts normally — setting the
+	// hidden flag would needlessly leak the SSID in probe requests) so the node
+	// joins it when the AP appears. This is the out-of-range add the webUI's
+	// by-name form promises; any other failure (wrong key, device error) is real.
+	if wifiNotInRange(out) {
+		return n.wifiSaveProfile(ssid, psk, false, false)
+	}
+	return fmt.Errorf("connect failed: %s", firstLine(out))
 }
 
-// wifiAddHidden creates (replacing any stale one) a saved Wi-Fi profile for a
-// hidden or out-of-range network, then tries to bring it up. The profile carries
-// 802-11-wireless.hidden=yes so NetworkManager actively probes for the SSID and
-// autoconnects when it appears; a not-in-range activation failure is NOT fatal —
-// the profile persists for later. The PSK is a separate argv element (no shell)
-// and never logged.
-func (n *Net) wifiAddHidden(ssid, psk string) error {
+// wifiSaveProfile creates (or updates in place) a saved Wi-Fi profile for a
+// network that `nmcli dev wifi connect` can't join directly — either a hidden SSID
+// or one that is simply out of range right now. The profile autoconnects, so
+// NetworkManager joins it when the AP appears.
+//
+// hidden sets 802-11-wireless.hidden=yes (active probing) — pass it ONLY for a
+// genuinely non-broadcasting network; a normal out-of-range network must not set
+// it (that leaks the SSID in probe requests). When hidden is false the hidden
+// property is left untouched, so re-saving an existing profile never flips it.
+//
+// tryUp says the network might be in range now (the hidden case): bring the
+// profile up and surface a wrong-password failure. A known-out-of-range save
+// (tryUp=false) skips activation — there is no AP to associate with, so `up` would
+// only block to its deadline and then fail. The PSK is a separate argv element (no
+// shell) and never logged.
+func (n *Net) wifiSaveProfile(ssid, psk string, hidden, tryUp bool) error {
 	exists := n.savedWifi()[ssid]
-	sec := []string{}
+	props := []string{"802-11-wireless.ssid", ssid, "connection.autoconnect", "yes"}
+	if hidden {
+		props = append(props, "802-11-wireless.hidden", "yes")
+	}
 	if psk != "" {
-		sec = []string{"wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", psk}
+		props = append(props, "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", psk)
 	}
 	if exists {
 		// Update IN PLACE so a failed change never destroys the working profile
 		// (delete-then-add would strand the node if the add failed). Converting an
 		// existing secured profile to open isn't handled here — supply a password to
 		// update a secured network.
-		args := append([]string{"connection", "modify", "id", ssid,
-			"802-11-wireless.ssid", ssid, "802-11-wireless.hidden", "yes", "connection.autoconnect", "yes"}, sec...)
+		args := append([]string{"connection", "modify", "id", ssid}, props...)
 		if out, err := runShort(15*time.Second, "nmcli", args...); err != nil {
 			return fmt.Errorf("update network failed: %s", firstLine(out))
 		}
@@ -372,18 +437,23 @@ func (n *Net) wifiAddHidden(ssid, psk string) error {
 		if dev, _ := n.wifiDevice(); dev != "" {
 			args = append(args, "ifname", dev)
 		}
-		args = append(args, "802-11-wireless.ssid", ssid, "802-11-wireless.hidden", "yes", "connection.autoconnect", "yes")
-		args = append(args, sec...)
+		args = append(args, props...)
 		if out, err := runShort(15*time.Second, "nmcli", args...); err != nil {
 			return fmt.Errorf("add network failed: %s", firstLine(out))
 		}
+	}
+	if !tryUp {
+		// Known out of range: the profile is saved and autoconnects when the AP shows
+		// up; activating now would just block and fail against a missing AP.
+		log.Printf("[net] network %q saved (out of range — will join when in range)", ssid)
+		return nil
 	}
 	// Bring it up now. Distinguish a wrong-key/secrets failure (surface it, and drop
 	// a just-added profile so a retry is clean) from a genuine out-of-range failure
 	// (expected — the saved profile auto-connects when the AP appears).
 	out, err := runShort(45*time.Second, "nmcli", "connection", "up", "id", ssid)
 	if err == nil {
-		log.Printf("[net] hidden network %q saved and connected", ssid)
+		log.Printf("[net] network %q saved and connected", ssid)
 		return nil
 	}
 	if psk != "" && wifiAuthFailure(out) {
@@ -392,8 +462,16 @@ func (n *Net) wifiAddHidden(ssid, psk string) error {
 		}
 		return fmt.Errorf("couldn't connect to %q — check the password (the network appears to be in range)", ssid)
 	}
-	log.Printf("[net] hidden network %q saved (not connected now: %s)", ssid, firstLine(out))
+	log.Printf("[net] network %q saved (not connected now: %s)", ssid, firstLine(out))
 	return nil
+}
+
+// wifiNotInRange reports whether an nmcli `dev wifi connect` failure is the
+// "SSID isn't currently visible" case (rather than a wrong password or a device
+// error), so WifiConnect can fall back to saving an autoconnect profile. nmcli
+// prints "Error: No network with SSID '…' found." for this.
+func wifiNotInRange(nmcliOut string) bool {
+	return strings.Contains(strings.ToLower(nmcliOut), "no network with ssid")
 }
 
 // wifiAuthFailure reports whether an nmcli activation error looks like a
@@ -659,21 +737,12 @@ func lessNetwork(a, b WifiNetwork) bool {
 // hasDefaultRoute reports whether the kernel routing table has a default route
 // (IPv4 or IPv6), by reading /proc — no fork.
 func hasDefaultRoute() bool {
-	// IPv4: /proc/net/route rows with Destination 00000000.
-	if b, err := os.ReadFile("/proc/net/route"); err == nil {
-		for i, line := range strings.Split(string(b), "\n") {
-			if i == 0 {
-				continue // header
-			}
-			f := strings.Fields(line)
-			if len(f) >= 2 && f[1] == "00000000" {
-				return true
-			}
-		}
-	}
-	// IPv6: /proc/net/ipv6_route rows with a 0-length destination prefix (dest
-	// 000…0 and prefix 00 in the 2nd field-group). A default route has
-	// destination all-zeros and prefix length 00.
+	return defaultRouteIface() != "" || hasDefaultRouteV6()
+}
+
+// hasDefaultRouteV6 reports an IPv6 default route: a /proc/net/ipv6_route row
+// with an all-zero destination and a 0-length prefix (the 2nd field-group).
+func hasDefaultRouteV6() bool {
 	if b, err := os.ReadFile("/proc/net/ipv6_route"); err == nil {
 		for _, line := range strings.Split(string(b), "\n") {
 			f := strings.Fields(line)
@@ -683,4 +752,137 @@ func hasDefaultRoute() bool {
 		}
 	}
 	return false
+}
+
+// defaultRouteIface returns the interface carrying the IPv4 default route (the
+// lowest-metric one if several exist), or "" if there is none. Fork-free.
+func defaultRouteIface() string {
+	b, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	return parseDefaultRouteIface(string(b))
+}
+
+// parseDefaultRouteIface picks the interface of the lowest-metric IPv4 default
+// route (Destination 00000000) from /proc/net/route contents. Pure (testable).
+func parseDefaultRouteIface(content string) string {
+	best, bestMetric := "", int(^uint(0)>>1)
+	for i, line := range strings.Split(content, "\n") {
+		if i == 0 {
+			continue // header
+		}
+		f := strings.Fields(line)
+		// Iface Destination Gateway Flags RefCnt Use Metric Mask ...
+		if len(f) < 7 || f[1] != "00000000" {
+			continue
+		}
+		metric, _ := strconv.Atoi(f[6])
+		if metric < bestMetric {
+			bestMetric, best = metric, f[0]
+		}
+	}
+	return best
+}
+
+// ifaceIPv4 returns the first non-loopback, non-link-local IPv4 address of the
+// named interface, or "". Uses the Go net stdlib (netlink) — no fork.
+func ifaceIPv4(name string) string {
+	ifi, err := net.InterfaceByName(name)
+	if err != nil {
+		return ""
+	}
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return ""
+	}
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip4 := ip.To4(); ip4 != nil && !ip4.IsLoopback() && !ip4.IsLinkLocalUnicast() {
+			return ip4.String()
+		}
+	}
+	return ""
+}
+
+// firstGlobalIPv4 returns the first up, non-loopback interface with a usable
+// IPv4 address — a fallback for a node online without a default route. No fork.
+func firstGlobalIPv4() (string, string) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", ""
+	}
+	for _, ifi := range ifaces {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if ip := ifaceIPv4(ifi.Name); ip != "" {
+			return ifi.Name, ip
+		}
+	}
+	return "", ""
+}
+
+// isWirelessIface reports whether the named interface is a Wi-Fi device, by
+// probing /sys/class/net/<iface>/wireless (present for any cfg80211 interface,
+// associated or not). Fork-free.
+func isWirelessIface(name string) bool {
+	if name == "" {
+		return false
+	}
+	_, err := os.Stat("/sys/class/net/" + name + "/wireless")
+	return err == nil
+}
+
+// procWirelessSignal returns the 0–100 signal strength for iface from
+// /proc/net/wireless, or (0,false) if it has no row (radio down / unassociated).
+func procWirelessSignal(iface string) (int, bool) {
+	b, err := os.ReadFile("/proc/net/wireless")
+	if err != nil {
+		return 0, false
+	}
+	return parseProcWireless(string(b), iface)
+}
+
+// parseProcWireless extracts iface's signal (0–100) from /proc/net/wireless
+// contents. Rows read like "wlp3s0: 0000   69.  -41.  -256 …" — the 3rd numeric
+// field (level) is the RF signal in dBm, which maps to a percentage. Trailing
+// dots (nmcli/iwconfig formatting) are stripped. Pure (testable).
+func parseProcWireless(content, iface string) (int, bool) {
+	for _, line := range strings.Split(content, "\n") {
+		name, rest, ok := strings.Cut(line, ":")
+		if !ok || strings.TrimSpace(name) != iface {
+			continue
+		}
+		f := strings.Fields(rest) // status link level noise ...
+		if len(f) < 3 {
+			return 0, false
+		}
+		dbm, err := strconv.ParseFloat(strings.TrimSuffix(f[2], "."), 64)
+		if err != nil {
+			return 0, false
+		}
+		return dbmToPercent(dbm), true
+	}
+	return 0, false
+}
+
+// dbmToPercent maps an RF signal level in dBm to a 0–100 strength using the
+// widely-used linear scale: −100 dBm (and weaker) → 0%, −50 dBm (and stronger) →
+// 100%. Pure (testable).
+func dbmToPercent(dbm float64) int {
+	switch {
+	case dbm >= -50:
+		return 100
+	case dbm <= -100:
+		return 0
+	default:
+		return int(2*(dbm+100) + 0.5)
+	}
 }

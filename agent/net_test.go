@@ -172,7 +172,7 @@ func TestWifiConnectValidation(t *testing.T) {
 	if err := n.WifiConnect("-dashnet", "password1", false); err == nil {
 		t.Error("ssid starting with '-' should error (nmcli arg-injection guard)")
 	}
-	// The same guards run before the hidden/pre-provision path forks nmcli.
+	// The same guards run before the hidden/out-of-range save path forks nmcli.
 	if err := n.WifiConnect("", "", true); err == nil {
 		t.Error("empty ssid should error on the hidden path too")
 	}
@@ -183,6 +183,106 @@ func TestWifiConnectValidation(t *testing.T) {
 	// the length/charset checks; we only assert the guards don't reject it)
 	// note: we can't assert success without nmcli, so just confirm the psk-length
 	// path accepts an 8-char key by checking it doesn't fail on validation alone.
+}
+
+func TestWifiNotInRange(t *testing.T) {
+	// nmcli's "SSID not currently visible" message → fall back to saving a profile.
+	notInRange := []string{
+		"Error: No network with SSID 'Jyväskylän Parkour Akatemia' found.",
+		"Error: No network with SSID 'HomeNet' found.",
+		"error: no network with ssid 'x' found.", // case-insensitive
+	}
+	for _, s := range notInRange {
+		if !wifiNotInRange(s) {
+			t.Errorf("wifiNotInRange(%q) = false, want true", s)
+		}
+	}
+	// A wrong password / device error is NOT out-of-range — surface it as-is.
+	inRange := []string{
+		"Error: Connection activation failed: (7) Secrets were required, but not provided.",
+		"Error: No suitable device found for this connection.",
+		"Timeout expired",
+		"",
+	}
+	for _, s := range inRange {
+		if wifiNotInRange(s) {
+			t.Errorf("wifiNotInRange(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestParseDefaultRouteIface(t *testing.T) {
+	// Real /proc/net/route from the nodes: disp is on eth0, disp-deb-air on wlp3s0.
+	wired := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"eth0\t00000000\t0102A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n" +
+		"eth0\t0002A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n"
+	if got := parseDefaultRouteIface(wired); got != "eth0" {
+		t.Errorf("parseDefaultRouteIface(wired) = %q, want eth0", got)
+	}
+	wifi := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"wlp3s0\t00000000\t0102A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n"
+	if got := parseDefaultRouteIface(wifi); got != "wlp3s0" {
+		t.Errorf("parseDefaultRouteIface(wifi) = %q, want wlp3s0", got)
+	}
+	// Lowest metric wins when several default routes exist.
+	dual := "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n" +
+		"wlan0\t00000000\t0102A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n" +
+		"eth0\t00000000\t0102A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
+	if got := parseDefaultRouteIface(dual); got != "eth0" {
+		t.Errorf("parseDefaultRouteIface(dual) = %q, want eth0 (lowest metric)", got)
+	}
+	// No default route (only the on-link subnet row) → "".
+	noDefault := "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n" +
+		"eth0\t0002A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n"
+	if got := parseDefaultRouteIface(noDefault); got != "" {
+		t.Errorf("parseDefaultRouteIface(noDefault) = %q, want empty", got)
+	}
+	if got := parseDefaultRouteIface(""); got != "" {
+		t.Errorf("parseDefaultRouteIface(empty) = %q, want empty", got)
+	}
+}
+
+func TestParseProcWireless(t *testing.T) {
+	// Real /proc/net/wireless from disp-deb-air: wlp3s0 at −41 dBm.
+	content := "Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE\n" +
+		" face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22\n" +
+		" wlp3s0: 0000   69.  -41.  -256        0      0      0      0      0        0\n"
+	if sig, ok := parseProcWireless(content, "wlp3s0"); !ok || sig != 100 {
+		t.Errorf("parseProcWireless(wlp3s0) = (%d,%v), want (100,true)", sig, ok)
+	}
+	// An interface with no row (radio down / unassociated, like disp) → not found.
+	if sig, ok := parseProcWireless(content, "wlan0"); ok || sig != 0 {
+		t.Errorf("parseProcWireless(absent) = (%d,%v), want (0,false)", sig, ok)
+	}
+	// Header-only file (a node with no associated wireless iface) → none.
+	headerOnly := "Inter-| sta-|   Quality        |   Discarded packets\n face | tus | link level noise\n"
+	if _, ok := parseProcWireless(headerOnly, "wlp3s0"); ok {
+		t.Error("parseProcWireless(header-only) reported a signal")
+	}
+	// A weaker signal maps below 100; interface matching must be exact (not a prefix).
+	weak := " wlan0: 0000   40.  -75.  -256        0\n"
+	if sig, ok := parseProcWireless(weak, "wlan0"); !ok || sig != 50 {
+		t.Errorf("parseProcWireless(weak) = (%d,%v), want (50,true)", sig, ok)
+	}
+	if _, ok := parseProcWireless(weak, "wlan"); ok {
+		t.Error("parseProcWireless matched a partial interface name")
+	}
+}
+
+func TestDbmToPercent(t *testing.T) {
+	cases := []struct {
+		dbm  float64
+		want int
+	}{
+		{-30, 100}, {-41, 100}, {-50, 100}, // strong → clamped to 100
+		{-60, 80}, {-75, 50}, {-90, 20}, // linear mid-range
+		{-100, 0}, {-110, 0}, // weak → clamped to 0
+	}
+	for _, c := range cases {
+		if got := dbmToPercent(c.dbm); got != c.want {
+			t.Errorf("dbmToPercent(%g) = %d, want %d", c.dbm, got, c.want)
+		}
+	}
 }
 
 func TestWifiAuthFailure(t *testing.T) {

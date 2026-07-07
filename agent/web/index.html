@@ -129,6 +129,14 @@
   .stat { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
   .stat b { display: block; margin-top: 3px; font-size: 16px; font-weight: 600; color: var(--fg); text-transform: none; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
   .stat.warn b { color: var(--warn); }
+  .netline { display: flex; align-items: center; gap: 9px; margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 13px; }
+  .netline .nic { color: var(--muted); display: inline-flex; flex: none; }
+  .netline .nic .svic { width: 17px; height: 17px; }
+  .netline .nname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .netline.off .nname { color: var(--muted); }
+  .netline .nip { font-size: 12px; color: var(--muted); }
+  .netline .spacer { flex: 1; }
+  .netline .nsig { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
   details.sect { border: 1px solid var(--hair); border-radius: 12px; margin-bottom: 12px; background: var(--panel); overflow: hidden; }
   details.sect > summary { cursor: pointer; padding: 15px 18px; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 11px; list-style: none; }
   details.sect > summary::-webkit-details-marker { display: none; }
@@ -250,6 +258,13 @@
         <div class="stat"><span class="meta">Resolution</span><b id="res-v">—</b></div>
         <div class="stat" id="thr-s"><span class="meta">Power</span><b id="thr-v">—</b></div>
         <div class="stat"><span class="meta">Cores</span><b id="cores-v">—</b></div>
+      </div>
+      <div class="netline" id="net-row" title="current network">
+        <span class="nic" id="net-ic"></span>
+        <span class="nname" id="net-name">—</span>
+        <span class="mono nip" id="net-ip"></span>
+        <span class="spacer"></span>
+        <span class="nsig" id="net-sig"></span>
       </div>
       <div id="upg" style="margin-top:14px;border-top:1px solid var(--line);padding-top:12px">
         <div class="row" style="justify-content:space-between">
@@ -439,9 +454,56 @@
         <label style="margin-top:16px">Add a network by name <span class="meta">— for a hidden or out-of-range network</span></label>
         <div class="row"><input type="text" id="wifi-ssid" placeholder="network name (SSID)" style="flex:1;min-width:140px">
           <input type="password" id="wifi-psk" placeholder="password (blank = open)" style="flex:1;min-width:140px"></div>
-        <div class="row mt"><label class="chk"><input type="checkbox" id="wifi-hidden"> hidden network</label>
+        <div class="row mt"><label class="chk" title="only for a network that does not broadcast its name — an out-of-range network does not need this"><input type="checkbox" id="wifi-hidden"> hidden network <span class="meta">(not broadcasting its name)</span></label>
           <button class="primary" id="wifi-add">Add network</button></div>
         <p class="meta" id="wifi-note" style="margin-top:8px">Join or forget Wi-Fi networks (via NetworkManager). Passwords are never shown or stored in the panel.</p>
+      </div>
+    </details>
+    <details class="sect" id="sec-sect">
+      <summary><span class="ic" data-ic="lock"></span> Security &amp; encryption <span class="tag" id="sec-tag"></span></summary>
+      <div class="body">
+        <p class="meta" style="margin-top:12px">This panel serves plain HTTP by default — anyone on the network can read the traffic. Encrypt it with either option below. Both are optional and off until you turn them on.</p>
+
+        <!-- Tailnet (Tailscale) -->
+        <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+          <div class="row" style="justify-content:space-between;margin-top:0"><strong>Tailnet · Tailscale</strong><span class="tag" id="ts-state">…</span></div>
+          <p class="meta" style="margin-top:6px">Joins an encrypted WireGuard mesh so you can reach this node — including over the internet — with all traffic encrypted. Optionally fronts the UI with a real HTTPS certificate (browser padlock, nothing to install).</p>
+          <div id="ts-unavail" class="meta warn hidden" style="margin-top:8px">Tailscale is not installed on this node.</div>
+          <div id="ts-join" class="hidden">
+            <label style="margin-top:10px">Join a tailnet <span class="meta">— paste a pre-auth key from your Tailscale admin console</span></label>
+            <div class="row"><input type="password" id="ts-key" placeholder="tskey-auth-…" style="flex:1;min-width:200px"></div>
+            <div class="row mt">
+              <label class="chk"><input type="checkbox" id="ts-serve-join" checked> serve UI over HTTPS</label>
+              <label class="chk"><input type="checkbox" id="ts-ssh"> enable Tailscale SSH</label>
+              <button class="primary" id="ts-up">Join tailnet</button>
+            </div>
+          </div>
+          <div id="ts-joined" class="hidden">
+            <div class="kv" style="margin-top:10px">
+              <span>tailnet</span><span class="mono" id="ts-net">—</span>
+              <span>reach at</span><span class="mono" id="ts-url" style="word-break:break-all">—</span>
+            </div>
+            <div class="row mt"><label class="chk"><input type="checkbox" id="ts-serve"> serve UI over HTTPS <span class="meta">(real ts.net certificate)</span></label></div>
+            <div class="row mt"><button class="danger" id="ts-leave">Leave tailnet</button></div>
+          </div>
+          <p class="meta" id="ts-note" style="margin-top:8px"></p>
+        </div>
+
+        <!-- Self-signed HTTPS -->
+        <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+          <div class="row" style="justify-content:space-between;margin-top:0"><strong>Self-signed HTTPS</strong><span class="tag" id="tls-state">…</span></div>
+          <p class="meta" style="margin-top:6px">Encrypts LAN traffic with no dependencies and nothing to install. Your browser shows a one-time “not secure” warning (there is no trusted root) — that is expected for a self-signed certificate; the connection is still encrypted.</p>
+          <div class="row mt">
+            <button class="primary" id="tls-toggle">…</button>
+            <button id="tls-regen" class="hidden">Regenerate certificate</button>
+          </div>
+          <div class="kv hidden" id="tls-meta" style="margin-top:10px">
+            <span>reach at</span><span class="mono" id="tls-url" style="word-break:break-all">—</span>
+            <span>expires</span><span class="mono" id="tls-exp">—</span>
+            <span>fingerprint</span><span class="mono" id="tls-fp" style="word-break:break-all;font-size:11px">—</span>
+          </div>
+          <p class="meta" id="tls-note" style="margin-top:8px"></p>
+        </div>
       </div>
     </details>
     <details class="sect">
@@ -548,6 +610,8 @@ const ICONS = {
   cast: '<path d="M2 16.1A5 5 0 0 1 5.9 20M2 12.05A9 9 0 0 1 9.95 20M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"></path><line x1="2" y1="20" x2="2.01" y2="20"></line>',
   gamepad: '<line x1="6" y1="11" x2="10" y2="11"></line><line x1="8" y1="9" x2="8" y2="13"></line><line x1="15" y1="12" x2="15.01" y2="12"></line><line x1="18" y1="10" x2="18.01" y2="10"></line><rect x="2" y="6" width="20" height="12" rx="2"></rect>',
   wifi: '<path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><line x1="12" y1="20" x2="12.01" y2="20"></line>',
+  wifioff: '<line x1="1" y1="1" x2="23" y2="23"></line><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"></path><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"></path><path d="M10.71 5.05A16 16 0 0 1 22.58 9"></path><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><line x1="12" y1="20" x2="12.01" y2="20"></line>',
+  ethernet: '<rect x="4" y="8" width="16" height="11" rx="1.5"></rect><line x1="8" y1="8" x2="8" y2="5"></line><line x1="16" y1="8" x2="16" y2="5"></line><line x1="8" y1="5" x2="16" y2="5"></line><line x1="8" y1="19" x2="8" y2="21"></line><line x1="12" y1="19" x2="12" y2="21"></line><line x1="16" y1="19" x2="16" y2="21"></line>',
   terminal: '<polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line>',
   zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>',
   power: '<path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path><line x1="12" y1="2" x2="12" y2="12"></line>',
@@ -563,6 +627,16 @@ const ICONS = {
   dot: '<circle cx="12" cy="12" r="4"></circle>'
 };
 function ic(name) { return '<svg class="svic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || ICONS.dot) + "</svg>"; }
+// signalBars renders a 4-bar Wi-Fi strength glyph, filled + colored by percent
+// (green strong / amber fair / red weak); empty bars fade to the hairline color.
+function signalBars(pct) {
+  const p = Math.max(0, Math.min(100, pct || 0));
+  const on = p >= 75 ? 4 : p >= 50 ? 3 : p >= 25 ? 2 : p > 0 ? 1 : 0;
+  const col = p >= 55 ? "var(--ok)" : p >= 25 ? "var(--warn)" : "var(--down)";
+  let bars = "";
+  for (let i = 0; i < 4; i++) { const h = 4 + i * 4; bars += '<rect x="' + (1 + i * 5) + '" y="' + (18 - h) + '" width="3" height="' + h + '" rx="1" fill="' + (i < on ? col : "var(--line)") + '"></rect>'; }
+  return '<svg class="sigbars" viewBox="0 0 19 18" width="17" height="16" aria-hidden="true" style="flex:none">' + bars + "</svg>";
+}
 function fillIcons(root) { (root || document).querySelectorAll("[data-ic]").forEach((el) => { el.innerHTML = ic(el.dataset.ic); }); }
 let busy = false, snap = null, curBackend = "compositor", lastHeroKey = "", lastActsJson = "";
 
@@ -774,6 +848,7 @@ function render(s) {
   renderRecent((s.state && s.state.history) || []);
   renderSettings(s);
   renderNet(s);
+  renderSecurity(s);
   renderInput(s);
   renderWebRecent(s);
   $("b-mc-note").textContent = (s.caps && s.caps.miracast) ? "" : "disabled — needs the agent's -allow-miracast";
@@ -857,7 +932,21 @@ function renderSystem(s) {
   $("thr-v").textContent = thrShort;
   $("thr-v").title = txt || (thr ? "vcgencmd get_throttled = " + thr : "");
   $("thr-s").classList.toggle("warn", !!live);
+  renderNetLine((s.net && s.net.link) || {});
   renderUpgrades(st.upgrades || {});
+}
+// renderNetLine fills the System-box network row: the current interface (Wi-Fi
+// SSID / Wired / Offline), its IP, and — on Wi-Fi — the signal bars + percent.
+function renderNetLine(l) {
+  const row = $("net-row"), icEl = $("net-ic"), nameEl = $("net-name"), ipEl = $("net-ip"), sigEl = $("net-sig");
+  const online = !!l.online, wireless = !!l.wireless;
+  icEl.innerHTML = ic(online ? (wireless ? "wifi" : "ethernet") : "wifioff");
+  nameEl.textContent = !online ? "Offline" : wireless ? (l.ssid || "Wi-Fi") : "Wired";
+  row.classList.toggle("off", !online);
+  ipEl.textContent = l.ip || "";
+  row.title = l.iface ? "current network · " + l.iface : "current network";
+  if (wireless && l.signal) { sigEl.innerHTML = signalBars(l.signal) + "<span>" + l.signal + "%</span>"; }
+  else { sigEl.innerHTML = ""; }
 }
 function renderUpgrades(u) {
   const line = $("upg-line"), run = $("upg-run"), check = $("upg-check"), log = $("upg-log"), pkgs = $("upg-pkgs");
@@ -1099,9 +1188,10 @@ function renderWifi(w) {
     const row = document.createElement("div"); row.className = "lrow";
     const badges = [nw.active ? "connected" : "", nw.saved ? "saved" : ""].filter(Boolean).join(" · ");
     const sub = [nw.signal ? nw.signal + "%" : "", nw.security || "open", badges].filter(Boolean).join(" · ");
-    row.innerHTML = '<span class="ic">' + (nw.security ? ic("lock") : ic("wifi")) + '</span><div class="main"><div class="t"></div><div class="s"></div></div><div class="acts"></div>';
+    row.innerHTML = '<span class="ic">' + (nw.security ? ic("lock") : ic("wifi")) + '</span><div class="main"><div class="t"></div><div class="s"></div></div><span class="sig"></span><div class="acts"></div>';
     row.querySelector(".t").textContent = nw.ssid;
     row.querySelector(".s").textContent = sub;
+    if (nw.signal) { const s = row.querySelector(".sig"); s.innerHTML = signalBars(nw.signal); s.title = nw.signal + "% signal"; }
     const acts = row.querySelector(".acts");
     if (!nw.active) {
       const b = document.createElement("button"); b.textContent = "Connect";
@@ -1117,8 +1207,13 @@ function renderWifi(w) {
 async function wifiConnect(nw) {
   let psk = "";
   if (nw.security && !nw.saved) { psk = prompt("Password for “" + nw.ssid + "”:", ""); if (psk === null) return; }
-  try { toast("connecting to " + nw.ssid + "…"); renderWifi(await api("POST", "/api/wifi", { ssid: nw.ssid, psk })); toast("connected to " + nw.ssid); pollSnapshot(); }
-  catch (e) { toast(e.message, true); }
+  try {
+    toast("connecting to " + nw.ssid + "…");
+    const w = await api("POST", "/api/wifi", { ssid: nw.ssid, psk });
+    renderWifi(w);
+    toast(w.active === nw.ssid ? "connected to " + nw.ssid : "saved " + nw.ssid + " — joins when in range");
+    pollSnapshot();
+  } catch (e) { toast(e.message, true); }
 }
 async function wifiForget(ssid) {
   if (!confirm("Forget saved network “" + ssid + "”?")) return;
@@ -1128,8 +1223,13 @@ async function wifiForget(ssid) {
 $("wifi-add").onclick = async () => {
   const ssid = $("wifi-ssid").value.trim(); if (!ssid) { toast("enter a network name", true); return; }
   const psk = $("wifi-psk").value, hidden = $("wifi-hidden").checked;
-  try { toast("adding " + ssid + "…"); renderWifi(await api("POST", "/api/wifi", { ssid, psk, hidden })); toast(hidden ? "hidden network saved" : "added " + ssid); $("wifi-ssid").value = ""; $("wifi-psk").value = ""; $("wifi-hidden").checked = false; pollSnapshot(); }
-  catch (e) { toast(e.message, true); }
+  try {
+    toast("adding " + ssid + "…");
+    const w = await api("POST", "/api/wifi", { ssid, psk, hidden });
+    renderWifi(w);
+    toast(w.active === ssid ? "connected to " + ssid : "saved " + ssid + " — joins when in range");
+    $("wifi-ssid").value = ""; $("wifi-psk").value = ""; $("wifi-hidden").checked = false; pollSnapshot();
+  } catch (e) { toast(e.message, true); }
 };
 $("wifi-scan").onclick = loadWifi;
 $("wifi-sect").addEventListener("toggle", (e) => { if (e.target.open && !wifiLoaded) { wifiLoaded = true; loadWifi(); } });
