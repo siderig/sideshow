@@ -88,6 +88,25 @@
   </div>
 
   <div class="panel">
+    <h2>Connectivity &amp; encryption <span class="meta" style="text-transform:none;letter-spacing:0">— optional</span></h2>
+    <p class="meta" style="margin:0 0 10px">The panel serves plain HTTP by default. Encrypt it now or later from Settings — both options are optional.</p>
+    <div class="feat">
+      <div class="t"><div>Join a tailnet (Tailscale)</div><small id="sw-ts-sub">reach this node securely, even over the internet — WireGuard-encrypted</small></div>
+      <span class="badge" id="sw-ts-badge">optional</span>
+    </div>
+    <div class="row" id="sw-ts-form" style="margin-top:8px">
+      <input type="password" id="sw-ts-key" placeholder="tskey-auth-… (paste a pre-auth key to join)" style="flex:1;min-width:220px;background:var(--tile);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:9px 12px">
+      <button id="sw-ts-join">Join</button>
+    </div>
+    <label class="feat" style="cursor:pointer;margin-top:10px">
+      <input type="checkbox" id="sw-tls">
+      <div class="t"><div>Serve HTTPS with a self-signed certificate</div><small>encrypts LAN traffic with no dependencies; browsers show a one-time warning</small></div>
+      <span class="badge" id="sw-tls-badge">off</span>
+    </label>
+    <p class="meta" id="sw-sec-note" style="margin-top:8px"></p>
+  </div>
+
+  <div class="panel">
     <h2>Finish</h2>
     <p class="meta" id="finish-note">When the features you need are installed, finish setup. You can install more later from Settings.</p>
     <div class="row"><button class="primary" id="finish-btn">Finish setup →</button></div>
@@ -193,7 +212,35 @@ $("finish-btn").onclick = async () => {
   } catch (e) { $("finish-btn").disabled = false; $("finish-note").textContent = e.message; }
 };
 
+// ---- optional connectivity & encryption ----
+async function loadSecurity() {
+  try {
+    const ts = await api("GET", "/api/tailscale");
+    if (!ts.installed) { $("sw-ts-sub").textContent = "Tailscale is not installed on this node"; $("sw-ts-join").disabled = true; $("sw-ts-key").disabled = true; $("sw-ts-badge").textContent = "n/a"; }
+    else if (ts.logged_in) { $("sw-ts-badge").textContent = "joined"; $("sw-ts-badge").classList.add("ok"); $("sw-ts-sub").textContent = ts.tailnet ? ("joined " + ts.tailnet) : "joined a tailnet"; $("sw-ts-form").classList.add("hidden"); }
+  } catch (e) {}
+  try { const tls = await api("GET", "/api/tls"); $("sw-tls").checked = !!tls.enabled; $("sw-tls-badge").textContent = tls.enabled ? "on" : "off"; if (tls.enabled) $("sw-tls-badge").classList.add("ok"); } catch (e) {}
+}
+// secNote writes status via textContent (never innerHTML) so a server-supplied
+// string — a tailscale error, a tailnet name — can't inject markup on this pre-auth page.
+function secNote(msg, cls) { const el = $("sw-sec-note"); el.textContent = msg || ""; el.className = "meta" + (cls ? " " + cls : ""); }
+$("sw-ts-join").onclick = async () => {
+  const authkey = $("sw-ts-key").value.trim();
+  if (!authkey) { secNote("paste a Tailscale auth key first", "warn"); return; }
+  $("sw-ts-join").disabled = true; secNote("joining tailnet…");
+  // ssh omitted (defaults off): joining must not silently grant a tailnet root shell — enable it later from Settings.
+  try { const r = await api("POST", "/api/tailscale/up", { authkey, serve: true }); $("sw-ts-key").value = ""; secNote(r.logged_in ? ("joined " + (r.tailnet || "tailnet")) : "join requested", "ok"); loadSecurity(); }
+  catch (e) { secNote(e.message, "warn"); $("sw-ts-join").disabled = false; }
+};
+$("sw-tls").onchange = async (e) => {
+  const enabled = e.target.checked;
+  secNote(enabled ? "enabling HTTPS…" : "disabling HTTPS…");
+  try { await api("POST", "/api/tls", { enabled }); $("sw-tls-badge").textContent = enabled ? "on" : "off"; $("sw-tls-badge").classList.toggle("ok", enabled); secNote(enabled ? "self-signed HTTPS enabled" : "self-signed HTTPS disabled", "ok"); }
+  catch (err) { secNote(err.message, "warn"); e.target.checked = !enabled; }
+};
+
 load("");
+loadSecurity();
 </script>
 </body>
 </html>

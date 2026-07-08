@@ -88,6 +88,11 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		Value:    s.cfg.AuthKey,
 		Path:     "/",
 		HttpOnly: true,
+		// The cookie value IS the key. When the login arrived over TLS (self-signed
+		// HTTPS or `tailscale serve`), mark it Secure so the browser never sends it
+		// back over the plain-HTTP :80 that stays up alongside, where a LAN sniffer
+		// could lift it. Left off for a plain-HTTP login so :80-only nodes still work.
+		Secure:   r.TLS != nil,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(30 * 24 * time.Hour),
 		MaxAge:   30 * 24 * 3600,

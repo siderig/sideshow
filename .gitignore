@@ -4,6 +4,8 @@
 .env
 secrets/
 *.secret
+*.authkey
+agent.key
 
 # Node / build
 node_modules/

@@ -36,13 +36,15 @@ type Server struct {
 	miracast  *Miracast
 	net       *Net
 	setup     *Setup
+	ts        *Tailscale
+	tlsm      *TLSManager
 	scheduler *Scheduler
 	mem       *Memory
 	mux       *http.ServeMux
 }
 
-func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, vnc *VNC, display *Display, power *Power, content *Content, plymouth *Plymouth, state *State, library *Library, playlist *Playlist, actions *Actions, miracast *Miracast, netmgr *Net, setup *Setup) *Server {
-	s := &Server{cfg: cfg, sup: sup, stats: stats, apt: apt, cec: cec, vnc: vnc, display: display, power: power, content: content, plymouth: plymouth, state: state, library: library, playlist: playlist, actions: actions, miracast: miracast, net: netmgr, setup: setup, mem: NewMemory(cfg), mux: http.NewServeMux()}
+func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, vnc *VNC, display *Display, power *Power, content *Content, plymouth *Plymouth, state *State, library *Library, playlist *Playlist, actions *Actions, miracast *Miracast, netmgr *Net, setup *Setup, ts *Tailscale) *Server {
+	s := &Server{cfg: cfg, sup: sup, stats: stats, apt: apt, cec: cec, vnc: vnc, display: display, power: power, content: content, plymouth: plymouth, state: state, library: library, playlist: playlist, actions: actions, miracast: miracast, net: netmgr, setup: setup, ts: ts, mem: NewMemory(cfg), mux: http.NewServeMux()}
 	s.mux.HandleFunc("/api/auth", s.handleAuth)
 	s.mux.HandleFunc("/api/logout", s.handleLogout)
 	s.mux.HandleFunc("/api/health", s.handleHealth)
@@ -68,6 +70,12 @@ func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, v
 	s.mux.HandleFunc("/api/hostname", s.handleHostname)
 	s.mux.HandleFunc("/api/wifi", s.handleWifi)
 	s.mux.HandleFunc("/api/wifi/delete", s.handleWifiForget)
+	s.mux.HandleFunc("/api/tailscale", s.handleTailscale)
+	s.mux.HandleFunc("/api/tailscale/up", s.handleTailscaleUp)
+	s.mux.HandleFunc("/api/tailscale/down", s.handleTailscaleDown)
+	s.mux.HandleFunc("/api/tailscale/serve", s.handleTailscaleServe)
+	s.mux.HandleFunc("/api/tls", s.handleTLS)
+	s.mux.HandleFunc("/api/tls/regenerate", s.handleTLSRegenerate)
 	s.mux.HandleFunc("/api/input", s.handleInput)
 	s.mux.HandleFunc("/setup", s.handleSetupPage)
 	s.mux.HandleFunc("/api/setup", s.handleSetup)
@@ -163,6 +171,12 @@ func (s *Server) setupExempt(r *http.Request) bool {
 	case "/setup", "/api/setup", "/api/setup/install", "/api/setup/finish":
 		return true
 	}
+	// NOTE: the Tailscale/TLS endpoints are deliberately NOT exempt. Joining a
+	// tailnet or toggling TLS is security-sensitive and must always require the
+	// key: on a keyed node the wizard's encryption panel needs an unlock, and on an
+	// unkeyed node these are open anyway (auth is off). Exempting them would let an
+	// unauthenticated LAN client enroll a not-yet-provisioned node into their own
+	// tailnet — persistent access surviving setup.
 	return false
 }
 
@@ -236,6 +250,8 @@ type Snapshot struct {
 	CurrentAction string             `json:"current_action,omitempty"`
 	Miracast      MiracastInfo       `json:"miracast"`
 	Net           NetInfo            `json:"net"`
+	Tailscale     TailscaleInfo      `json:"tailscale"`
+	TLS           TLSInfo            `json:"tls"`
 	Input         InputInfo          `json:"input"`
 	ScheduleWeek  WeeklyScheduleInfo `json:"schedule_week"`
 	Caps          SnapshotCaps       `json:"caps"`
@@ -327,6 +343,8 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		CurrentAction: s.actions.CurrentSlug(curMode),
 		Miracast:      s.miracast.Info(),
 		Net:           s.net.Info(),
+		Tailscale:     s.ts.Info(),
+		TLS:           s.tlsInfo(),
 		Input:         s.inputInfo(),
 		ScheduleWeek:  s.scheduler.Info(),
 		Caps:          SnapshotCaps{Shutdown: s.cfg.AllowShutdown, Miracast: s.cfg.AllowMiracast},
@@ -672,6 +690,137 @@ func (s *Server) handleWifiForget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, s.net.WifiStatus())
+}
+
+// ---- encryption: Tailscale overlay + self-signed HTTPS (both opt-in) ----
+
+// SetTLS links the self-signed-HTTPS manager after construction (it wraps the
+// server as its handler, so it can't be built before the server exists).
+func (s *Server) SetTLS(m *TLSManager) { s.tlsm = m }
+
+// tlsInfo is the snapshot's self-signed-HTTPS block, guarding the brief
+// pre-SetTLS window (SetTLS runs right after NewServer, before serving starts).
+func (s *Server) tlsInfo() TLSInfo {
+	if s.tlsm == nil {
+		return TLSInfo{HTTPSAddr: s.cfg.HTTPSAddr}
+	}
+	return s.tlsm.Info()
+}
+
+// handleTailscale reports overlay status (GET). Auth keys are write-only (POST
+// /api/tailscale/up) and never returned here.
+func (s *Server) handleTailscale(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use GET")})
+		return
+	}
+	writeJSON(w, 200, s.ts.Status())
+}
+
+// handleTailscaleUp joins a tailnet. POST {"authkey":"…","ssh":bool,"serve":bool}.
+func (s *Server) handleTailscaleUp(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
+		return
+	}
+	var body struct {
+		AuthKey string `json:"authkey"`
+		SSH     bool   `json:"ssh"`
+		Serve   bool   `json:"serve"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+		return
+	}
+	if err := s.ts.Up(body.AuthKey, body.SSH, body.Serve); err != nil {
+		writeErr(w, &apiError{code: 400, err: err})
+		return
+	}
+	writeJSON(w, 200, s.ts.Info())
+}
+
+// handleTailscaleDown leaves the tailnet (POST) — the clean opt-out.
+func (s *Server) handleTailscaleDown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
+		return
+	}
+	if err := s.ts.Down(); err != nil {
+		writeErr(w, &apiError{code: 400, err: err})
+		return
+	}
+	writeJSON(w, 200, s.ts.Info())
+}
+
+// handleTailscaleServe toggles the ts.net HTTPS front. POST {"enabled":bool}.
+func (s *Server) handleTailscaleServe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
+		return
+	}
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+		return
+	}
+	if err := s.ts.SetServe(body.Enabled); err != nil {
+		writeErr(w, &apiError{code: 400, err: err})
+		return
+	}
+	writeJSON(w, 200, s.ts.Info())
+}
+
+// handleTLS reports (GET) or toggles (POST {"enabled":bool}) the opt-in
+// self-signed HTTPS listener.
+func (s *Server) handleTLS(w http.ResponseWriter, r *http.Request) {
+	if s.tlsm == nil {
+		writeErr(w, &apiError{code: 503, err: fmt.Errorf("TLS manager not ready")})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, 200, s.tlsm.Info())
+	case http.MethodPost:
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+			writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+			return
+		}
+		var err error
+		if body.Enabled {
+			err = s.tlsm.Enable()
+		} else {
+			err = s.tlsm.Disable()
+		}
+		if err != nil {
+			writeErr(w, &apiError{code: 400, err: err})
+			return
+		}
+		writeJSON(w, 200, s.tlsm.Info())
+	default:
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use GET or POST")})
+	}
+}
+
+// handleTLSRegenerate replaces the self-signed cert with a fresh one (POST).
+func (s *Server) handleTLSRegenerate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
+		return
+	}
+	if s.tlsm == nil {
+		writeErr(w, &apiError{code: 503, err: fmt.Errorf("TLS manager not ready")})
+		return
+	}
+	if err := s.tlsm.Regenerate(); err != nil {
+		writeErr(w, &apiError{code: 400, err: err})
+		return
+	}
+	writeJSON(w, 200, s.tlsm.Info())
 }
 
 // inputInfo reports the node-global local-input policy for the snapshot + GET

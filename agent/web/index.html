@@ -1234,6 +1234,72 @@ $("wifi-add").onclick = async () => {
 $("wifi-scan").onclick = loadWifi;
 $("wifi-sect").addEventListener("toggle", (e) => { if (e.target.open && !wifiLoaded) { wifiLoaded = true; loadWifi(); } });
 
+// ---- Security: Tailscale overlay + self-signed HTTPS ----
+let tsNoteUntil = 0; // while Date.now() < this, a transient error stays in #ts-note (the poll won't wipe it)
+function tsNote(msg) { $("ts-note").textContent = msg || ""; tsNoteUntil = Date.now() + 8000; }
+function renderSecurity(s) {
+  const ts = s.tailscale || {}, tls = s.tls || {};
+  // Tailscale
+  $("ts-unavail").classList.toggle("hidden", ts.installed !== false ? true : false);
+  const joined = !!ts.logged_in;
+  $("ts-join").classList.toggle("hidden", !ts.installed || joined);
+  $("ts-joined").classList.toggle("hidden", !joined);
+  let tstate = ts.installed === false ? "n/a" : (joined ? (ts.serve_on ? "HTTPS" : "on") : "not joined");
+  $("ts-state").textContent = tstate;
+  if (joined) {
+    $("ts-net").textContent = ts.tailnet || "—";
+    $("ts-url").textContent = ts.url || "—";
+    if (document.activeElement !== $("ts-serve")) $("ts-serve").checked = !!ts.serve_on;
+  }
+  if (Date.now() > tsNoteUntil) $("ts-note").textContent = ts.note || ""; // keep a transient error visible
+  // Self-signed HTTPS
+  $("tls-state").textContent = tls.enabled ? "on" : "off";
+  $("tls-toggle").textContent = tls.enabled ? "Disable HTTPS" : "Enable HTTPS";
+  $("tls-regen").classList.toggle("hidden", !tls.available);
+  const meta = $("tls-meta");
+  if (tls.enabled || tls.available) {
+    meta.classList.remove("hidden");
+    const host = location.hostname || "this-node";
+    const port = (tls.https_addr || ":443").replace(/^.*:/, "");
+    $("tls-url").textContent = "https://" + host + (port === "443" ? "" : ":" + port);
+    $("tls-exp").textContent = tls.not_after ? new Date(tls.not_after).toLocaleDateString() : "—";
+    $("tls-fp").textContent = tls.fingerprint || "—";
+  } else meta.classList.add("hidden");
+  const on = []; if (joined) on.push("tailnet"); if (tls.enabled) on.push("https");
+  $("sec-tag").textContent = on.join(" · ");
+}
+$("ts-up").onclick = async () => {
+  const authkey = $("ts-key").value.trim();
+  if (!authkey) { toast("paste a Tailscale auth key", true); return; }
+  const ssh = $("ts-ssh").checked, serve = $("ts-serve-join").checked;
+  $("ts-up").disabled = true;
+  try { toast("joining tailnet…"); const r = await api("POST", "/api/tailscale/up", { authkey, ssh, serve }); $("ts-key").value = ""; toast(r.logged_in ? "joined " + (r.tailnet || "tailnet") : "join requested"); pollSnapshot(); }
+  catch (e) { toast(e.message, true); tsNote(e.message); }
+  finally { $("ts-up").disabled = false; }
+};
+$("ts-leave").onclick = async () => {
+  if (!confirm("Leave the tailnet? This node logs out and is removed from it.")) return;
+  try { await api("POST", "/api/tailscale/down"); toast("left the tailnet"); pollSnapshot(); }
+  catch (e) { toast(e.message, true); }
+};
+$("ts-serve").onchange = async (e) => {
+  const enabled = e.target.checked;
+  try { await api("POST", "/api/tailscale/serve", { enabled }); toast(enabled ? "serving UI over HTTPS" : "HTTPS front off"); pollSnapshot(); }
+  catch (err) { toast(err.message, true); tsNote(err.message); e.target.checked = !enabled; pollSnapshot(); }
+};
+$("tls-toggle").onclick = async () => {
+  const enable = !(snap && snap.tls && snap.tls.enabled);
+  $("tls-toggle").disabled = true;
+  try { await api("POST", "/api/tls", { enabled: enable }); toast(enable ? "self-signed HTTPS enabled" : "self-signed HTTPS disabled"); pollSnapshot(); }
+  catch (e) { toast(e.message, true); $("tls-note").textContent = e.message; }
+  finally { $("tls-toggle").disabled = false; }
+};
+$("tls-regen").onclick = async () => {
+  if (!confirm("Regenerate the self-signed certificate? Browsers that trusted the old one will warn again.")) return;
+  try { await api("POST", "/api/tls/regenerate"); toast("certificate regenerated"); pollSnapshot(); }
+  catch (e) { toast(e.message, true); }
+};
+
 // ---- Advanced: logs ----
 async function refreshLogs() { try { const r = await fetch("/api/logs?tail=200"); if (r.status === 401) { showLogin(); return; } const t = await r.text(); $("logs").textContent = t; $("logs").scrollTop = $("logs").scrollHeight; } catch (e) {} }
 $("logs-refresh").onclick = refreshLogs;

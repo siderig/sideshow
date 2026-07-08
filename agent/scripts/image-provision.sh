@@ -28,7 +28,7 @@ echo ">> [provision] compositor=$COMPOSITOR seat-user=$SEATUSER"
 # per package (a suite may lack uxplay/wayvnc — the matching mode just 400s).
 # Chromium is installed separately: the package is `chromium` on Debian but
 # `chromium-browser` on Raspberry Pi OS.
-CORE="ca-certificates plymouth plymouth-themes network-manager \
+CORE="ca-certificates curl plymouth plymouth-themes network-manager \
   cloud-guest-utils e2fsprogs unattended-upgrades \
   gcc make pkg-config libdrm-dev libegl-dev libgles-dev libgbm-dev"
 if [ "$COMPOSITOR" = wayland ]; then
@@ -51,6 +51,18 @@ apt-get install -y --no-install-recommends chromium \
 for p in $OPTIONAL; do
   apt-get install -y --no-install-recommends "$p" || echo "   WARN: '$p' unavailable in this suite (its feature will be degraded)"
 done
+
+# --- Tailscale (preinstalled, opt-in) ---------------------------------------
+# Ship the tailscale CLI + daemon so an operator can CHOOSE to join a tailnet
+# from the setup wizard or Settings (encrypted remote access + an optional real
+# ts.net HTTPS cert). It is installed LOGGED OUT — the node never joins anything
+# on its own. A pre-auth key staged at /etc/sideshow/tailscale.authkey (dropped at
+# flash time) is consumed and shredded by the agent on first boot; without one it
+# just stays idle. Its own apt repo is added by the official installer.
+if ! command -v tailscale >/dev/null 2>&1; then
+  curl -fsSL https://tailscale.com/install.sh | sh \
+    || echo "   WARN: tailscale install failed — the tailnet option stays unavailable until installed"
+fi
 # display=kms modes run as root; clear root's stale GStreamer registry so the
 # freshly-installed plugins (kmssink) are found on first use.
 rm -rf /root/.cache/gstreamer-1.0 2>/dev/null || true
@@ -151,6 +163,8 @@ systemctl set-default multi-user.target 2>/dev/null || true
 systemctl enable sideshow-expand-rootfs.service 2>/dev/null || true
 systemctl enable sideshow-agent.service 2>/dev/null || true
 systemctl enable NetworkManager.service 2>/dev/null || true
+# tailscaled ready-but-idle (logged out) so the opt-in tailnet join works instantly.
+command -v tailscale >/dev/null 2>&1 && systemctl enable tailscaled.service 2>/dev/null || true
 [ "$COMPOSITOR" = wayland ] && systemctl enable seatd.service 2>/dev/null || true
 command -v systemctl >/dev/null 2>&1 && systemctl enable avahi-daemon.service 2>/dev/null || true
 # unattended-upgrades runs off the apt-daily timers (staggered by a randomized delay).

@@ -108,6 +108,9 @@ type Config struct {
 	WatchdogProbe   string // TCP address the watchdog dials to test connectivity
 	WatchdogReboot  bool   // let the watchdog reboot the node when the mode stays down
 
+	HTTPSAddr            string // listen address for the opt-in self-signed HTTPS listener (e.g. ":443")
+	TailscaleAuthKeyFile string // staged pre-auth key consumed + shredded on first boot (flashed images); "" disables
+
 	cred *syscall.Credential // resolved seat-user credential when running as root
 }
 
@@ -181,6 +184,8 @@ func main() {
 	flag.StringVar(&cfg.AuthKeyFile, "auth-key-file", "/etc/sideshow/agent.key", "file holding the UI/API key (missing/empty → no auth)")
 	flag.StringVar(&cfg.AuthKey, "auth-key", "", "UI/API key (overrides -auth-key-file; mainly for testing)")
 	flag.BoolVar(&cfg.InitAuthKey, "init-auth-key", false, "first-run provisioning: mint a unique random key at -auth-key-file if it is missing/empty (used by flashed images so no shared secret is ever baked in)")
+	flag.StringVar(&cfg.HTTPSAddr, "https-addr", ":443", "listen address for the opt-in self-signed HTTPS listener (served alongside -addr when enabled)")
+	flag.StringVar(&cfg.TailscaleAuthKeyFile, "tailscale-authkey-file", "/etc/sideshow/tailscale.authkey", "staged Tailscale pre-auth key: if present at first boot the node joins the tailnet, then the file is shredded (flashed images); missing = never auto-joins")
 	flag.BoolVar(&cfg.AllowShutdown, "allow-shutdown", true, "allow POST /api/shutdown (poweroff); set false on unattended nodes that can't be powered back on remotely")
 	flag.BoolVar(&cfg.AllowCustomRoot, "allow-custom-root", false, "allow custom app modes to run as ROOT on the framebuffer (display=kms) — off by default (arbitrary root program execution behind the auth gate)")
 	flag.StringVar(&cfg.NodeLabel, "node-label", "", "human label for the fleet view, e.g. \"Lobby screen\"")
@@ -242,12 +247,18 @@ func main() {
 	sup.SetMiracast(miracast)
 	netmgr := NewNet(cfg)
 	setup := NewSetup(cfg, state)
+	tsmgr := NewTailscale(cfg, netmgr)
 	// Cross-link display ↔ content (post-construction to avoid a constructor
 	// cycle): content routes per-output assignments via the display's primary;
 	// the display folds per-output content into /api/outputs + /api/status.
 	display.SetContent(content)
 	content.SetDisplay(display)
-	srv := NewServer(cfg, sup, stats, apt, cec, vnc, display, power, content, plymouth, state, library, playlist, actions, miracast, netmgr, setup)
+	srv := NewServer(cfg, sup, stats, apt, cec, vnc, display, power, content, plymouth, state, library, playlist, actions, miracast, netmgr, setup, tsmgr)
+	// The self-signed HTTPS listener wraps the same handler (srv), so it is created
+	// after srv and linked back in (avoids a constructor cycle), then brought up if
+	// the operator had previously enabled it.
+	tlsm := NewTLSManager(cfg, netmgr, srv)
+	srv.SetTLS(tlsm)
 	// After an unattended return-to-base (a console mode the operator quit, or a
 	// crash recovery), re-record what's now on screen so the persisted "active"
 	// matches the screen — else a reboot would relaunch the retired mode.
@@ -267,12 +278,16 @@ func main() {
 	miracast.Start()
 	NewWatchdog(cfg, sup).Start()
 	NewHeartbeat(cfg, sup, stats, netmgr).Start()
-	// Boot-time network actions (both opt-in, no-ops unless -auto-hostname /
-	// -comitup): rename a stock-default hostname, and raise the comitup recovery
-	// AP if the node booted with no network. Off the hot path (they fork).
+	tsmgr.Start()         // background tailnet-status refresher (fork-free snapshot)
+	tlsm.StartIfEnabled() // restore the self-signed HTTPS listener if it was on
+	// Boot-time network actions (all opt-in, no-ops unless configured): rename a
+	// stock-default hostname, raise the comitup recovery AP if the node booted with
+	// no network, and consume a staged Tailscale pre-auth key (flashed images).
+	// Off the hot path (they fork).
 	go func() {
 		netmgr.MaybeAutoName()
 		netmgr.MaybeStartComitup()
+		tsmgr.MaybeJoinFromKeyFile()
 	}()
 	display.SeedZoom() // before the initial navigate so a persisted zoom takes effect
 
