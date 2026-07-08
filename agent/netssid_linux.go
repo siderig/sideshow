@@ -17,16 +17,24 @@ const (
 	ifNameSize     = 16
 )
 
-// iwreq mirrors the kernel `struct iwreq` for the ESSID query on 64-bit: a
-// 16-byte interface name followed by `struct iw_point { void *pointer; __u16
-// length; __u16 flags; }`. Both node arches (arm64, amd64) are 64-bit
-// little-endian, so this single layout is correct for the agent's targets; the
-// pointer field lands at the 8-aligned offset 16, matching the C union.
-type iwreq struct {
-	name    [ifNameSize]byte
+// iwPoint is the leading member of the kernel's `union iwreq_data` that
+// SIOCGIWESSID uses: a userspace buffer pointer plus its length and flags.
+type iwPoint struct {
 	pointer uintptr
 	length  uint16
 	flags   uint16
+}
+
+// iwreq mirrors the kernel `struct iwreq`: a 16-byte interface name followed by
+// the `union iwreq_data`. The union is fixed at 16 bytes (its largest member is a
+// 16-byte sockaddr), and we overlay iwPoint on its start — so struct iwreq is 32
+// bytes on EVERY arch, and [2]uint64 also forces the 8-byte alignment the pointer
+// needs on 64-bit. A bare {pointer,length,flags} would be only 24 bytes on 32-bit
+// (armhf, a released build): SIOCGIWESSID's copy_to_user(sizeof(struct iwreq)=32)
+// would then overrun the following SSID buffer and corrupt the result there.
+type iwreq struct {
+	name [ifNameSize]byte
+	data [2]uint64 // union iwreq_data (16 bytes); only the leading iwPoint is used
 }
 
 // essidQuery bundles the request with the SSID buffer it points at in one struct,
@@ -38,6 +46,14 @@ type essidQuery struct {
 	req iwreq
 	buf [iwEssidMaxSize + 1]byte
 }
+
+// Compile-time guard: struct iwreq must be exactly 32 bytes on EVERY arch (incl.
+// 32-bit armhf), or SIOCGIWESSID's copy_to_user(sizeof(struct iwreq)) overruns buf.
+// These two constants fail to compile if the size drifts either way.
+const (
+	_ = uint(unsafe.Sizeof(iwreq{}) - 32)
+	_ = uint(32 - unsafe.Sizeof(iwreq{}))
+)
 
 // wifiSSID returns the SSID the wireless interface is associated with, or "" if
 // it is not associated or the driver has no WEXT-compat for this get. It is a
@@ -57,15 +73,16 @@ func wifiSSID(iface string) string {
 
 	var q essidQuery
 	copy(q.req.name[:], iface)
-	q.req.pointer = uintptr(unsafe.Pointer(&q.buf[0]))
-	q.req.length = iwEssidMaxSize
+	pt := (*iwPoint)(unsafe.Pointer(&q.req.data)) // overlay the iw_point on the union
+	pt.pointer = uintptr(unsafe.Pointer(&q.buf[0]))
+	pt.length = iwEssidMaxSize
 
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), siocgiwessid, uintptr(unsafe.Pointer(&q.req)))
-	runtime.KeepAlive(&q) // the kernel wrote into q.buf via q.req.pointer
+	runtime.KeepAlive(&q) // the kernel wrote into q.buf via the overlaid pointer
 	if errno != 0 {
 		return ""
 	}
-	n := int(q.req.length)
+	n := int(pt.length) // the kernel wrote the SSID length back into the iw_point
 	if n > len(q.buf) {
 		n = len(q.buf)
 	}

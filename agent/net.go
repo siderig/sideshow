@@ -286,13 +286,13 @@ func (n *Net) WifiStatus() WifiInfo {
 	if !managed {
 		info.Note = "the wireless device is not managed by NetworkManager"
 	}
-	if out, err := runShort(5*time.Second, "nmcli", "-t", "-f", "WIFI", "radio"); err == nil {
+	if out, err := runNmcli(5*time.Second, "-t", "-f", "WIFI", "radio"); err == nil {
 		info.Radio = strings.TrimSpace(out)
 	}
 	saved := n.savedWifi() // set of SSID names with a saved connection
 
 	// Scan (a rescan can be slow → a generous bound).
-	out, _ := runShort(20*time.Second, "nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list")
+	out, _ := runNmcli(20*time.Second, "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list")
 	info.Networks, info.Active = parseWifiScan(out, saved)
 	return info
 }
@@ -382,7 +382,7 @@ func (n *Net) WifiConnect(ssid, psk string, hidden bool) error {
 		args = append(args, "ifname", dev)
 	}
 	// nmcli can block while associating/DHCP-ing → a generous bound.
-	out, err := runShort(45*time.Second, "nmcli", args...)
+	out, err := runNmcli(45*time.Second, args...)
 	if err == nil {
 		log.Printf("[net] wifi connect to %q ok", ssid)
 		return nil
@@ -429,7 +429,7 @@ func (n *Net) wifiSaveProfile(ssid, psk string, hidden, tryUp bool) error {
 		// existing secured profile to open isn't handled here — supply a password to
 		// update a secured network.
 		args := append([]string{"connection", "modify", "id", ssid}, props...)
-		if out, err := runShort(15*time.Second, "nmcli", args...); err != nil {
+		if out, err := runNmcli(15*time.Second, args...); err != nil {
 			return fmt.Errorf("update network failed: %s", firstLine(out))
 		}
 	} else {
@@ -438,7 +438,7 @@ func (n *Net) wifiSaveProfile(ssid, psk string, hidden, tryUp bool) error {
 			args = append(args, "ifname", dev)
 		}
 		args = append(args, props...)
-		if out, err := runShort(15*time.Second, "nmcli", args...); err != nil {
+		if out, err := runNmcli(15*time.Second, args...); err != nil {
 			return fmt.Errorf("add network failed: %s", firstLine(out))
 		}
 	}
@@ -451,14 +451,14 @@ func (n *Net) wifiSaveProfile(ssid, psk string, hidden, tryUp bool) error {
 	// Bring it up now. Distinguish a wrong-key/secrets failure (surface it, and drop
 	// a just-added profile so a retry is clean) from a genuine out-of-range failure
 	// (expected — the saved profile auto-connects when the AP appears).
-	out, err := runShort(45*time.Second, "nmcli", "connection", "up", "id", ssid)
+	out, err := runNmcli(45*time.Second, "connection", "up", "id", ssid)
 	if err == nil {
 		log.Printf("[net] network %q saved and connected", ssid)
 		return nil
 	}
 	if psk != "" && wifiAuthFailure(out) {
 		if !exists {
-			_, _ = runShort(10*time.Second, "nmcli", "connection", "delete", "id", ssid)
+			_, _ = runNmcli(10*time.Second, "connection", "delete", "id", ssid)
 		}
 		return fmt.Errorf("couldn't connect to %q — check the password (the network appears to be in range)", ssid)
 	}
@@ -493,7 +493,7 @@ func (n *Net) WifiForget(ssid string) error {
 	if !n.savedWifi()[ssid] {
 		return fmt.Errorf("no saved network %q", ssid)
 	}
-	if out, err := runShort(10*time.Second, "nmcli", "connection", "delete", "id", ssid); err != nil {
+	if out, err := runNmcli(10*time.Second, "connection", "delete", "id", ssid); err != nil {
 		return fmt.Errorf("forget failed: %s", firstLine(out))
 	}
 	log.Printf("[net] wifi forget %q ok", ssid)
@@ -510,7 +510,7 @@ func (n *Net) hasWifiDevice() bool {
 // wifiDevice returns the first wireless device name and whether it is managed
 // by NetworkManager.
 func (n *Net) wifiDevice() (string, bool) {
-	out, err := runShort(5*time.Second, "nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "dev")
+	out, err := runNmcli(5*time.Second, "-t", "-f", "DEVICE,TYPE,STATE", "dev")
 	if err != nil {
 		return "", false
 	}
@@ -527,7 +527,7 @@ func (n *Net) wifiDevice() (string, bool) {
 // savedWifi returns the set of SSIDs (connection names) with a saved wifi
 // profile. NetworkManager names a wifi profile after its SSID by default.
 func (n *Net) savedWifi() map[string]bool {
-	out, err := runShort(5*time.Second, "nmcli", "-t", "-f", "NAME,TYPE", "connection", "show")
+	out, err := runNmcli(5*time.Second, "-t", "-f", "NAME,TYPE", "connection", "show")
 	saved := map[string]bool{}
 	if err != nil {
 		return saved
@@ -740,16 +740,36 @@ func hasDefaultRoute() bool {
 	return defaultRouteIface() != "" || hasDefaultRouteV6()
 }
 
-// hasDefaultRouteV6 reports an IPv6 default route: a /proc/net/ipv6_route row
-// with an all-zero destination and a 0-length prefix (the 2nd field-group).
+// hasDefaultRouteV6 reports a *usable* IPv6 default route by reading /proc — no fork.
 func hasDefaultRouteV6() bool {
-	if b, err := os.ReadFile("/proc/net/ipv6_route"); err == nil {
-		for _, line := range strings.Split(string(b), "\n") {
-			f := strings.Fields(line)
-			if len(f) >= 2 && f[0] == "00000000000000000000000000000000" && f[1] == "00" {
-				return true
-			}
+	b, err := os.ReadFile("/proc/net/ipv6_route")
+	if err != nil {
+		return false
+	}
+	return parseHasDefaultRouteV6(string(b))
+}
+
+// parseHasDefaultRouteV6 reports whether /proc/net/ipv6_route holds a real default
+// route: destination ::/0 (all-zero dest + "00" prefix length) that is UP, not a
+// reject/unreachable route, and not on loopback. Without those guards a lingering
+// lo or unreachable ::/0 row (common on IPv6-enabled hosts with no real IPv6
+// uplink) makes an offline node report Online. Fields:
+// dest destlen src srclen nexthop metric refcnt use flags iface. Pure (testable).
+func parseHasDefaultRouteV6(content string) bool {
+	const rtfUp, rtfReject = 0x1, 0x200
+	for _, line := range strings.Split(content, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 10 || f[0] != "00000000000000000000000000000000" || f[1] != "00" {
+			continue
 		}
+		if f[9] == "lo" {
+			continue // a loopback ::/0 is not real connectivity
+		}
+		flags := parseHexU64(f[8])
+		if flags&rtfUp == 0 || flags&rtfReject != 0 {
+			continue // down, or a reject/unreachable/blackhole route
+		}
+		return true
 	}
 	return false
 }

@@ -185,6 +185,33 @@ func TestWifiConnectValidation(t *testing.T) {
 	// path accepts an 8-char key by checking it doesn't fail on validation alone.
 }
 
+func TestParseHasDefaultRouteV6(t *testing.T) {
+	z := "00000000000000000000000000000000"
+	// dest destlen src srclen nexthop metric refcnt use flags iface
+	line := func(dlen, flags, iface string) string {
+		return z + " " + dlen + " " + z + " 00 " + z + " 00000400 00000000 00000000 " + flags + " " + iface
+	}
+	if !parseHasDefaultRouteV6(line("00", "00000003", "wlp3s0")) { // ::/0 UP+GATEWAY
+		t.Error("a real ::/0 default should count as online")
+	}
+	if parseHasDefaultRouteV6(line("00", "00000001", "lo")) {
+		t.Error("a loopback ::/0 must NOT count")
+	}
+	if parseHasDefaultRouteV6(line("00", "00000201", "eth0")) { // RTF_UP|RTF_REJECT (0x1|0x200)
+		t.Error("an unreachable/reject ::/0 must NOT count")
+	}
+	if parseHasDefaultRouteV6(line("00", "00000002", "eth0")) { // no RTF_UP
+		t.Error("a down ::/0 must NOT count")
+	}
+	if parseHasDefaultRouteV6(line("40", "00000003", "eth0")) { // not ::/0
+		t.Error("a non-default (::/N) route must be ignored")
+	}
+	// a real default mixed with a lo row is still found
+	if !parseHasDefaultRouteV6(line("00", "00000001", "lo") + "\n" + line("00", "00000003", "eth0")) {
+		t.Error("a real default among noise rows should be found")
+	}
+}
+
 func TestWifiNotInRange(t *testing.T) {
 	// nmcli's "SSID not currently visible" message → fall back to saving a profile.
 	notInRange := []string{
