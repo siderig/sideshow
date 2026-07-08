@@ -153,9 +153,11 @@
   #login p { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
   #login input { width: 100%; padding: 10px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: 14px; }
   #login .err { color: var(--down); font-size: 12px; min-height: 16px; margin-top: 8px; }
-  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 60; }
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 60; max-width: min(90vw, 560px); }
   #toast.show { opacity: 1; }
-  #toast.err { border-color: var(--down); color: var(--down); }
+  /* Errors persist until dismissed: make them clickable with an ✕ affordance. */
+  #toast.err { border-color: var(--down); color: var(--down); pointer-events: auto; cursor: pointer; padding-right: 40px; }
+  #toast.err::after { content: "✕"; position: absolute; right: 14px; top: 50%; transform: translateY(-50%); opacity: .65; font-weight: 700; }
   .svic { display: inline-block; width: 1em; height: 1em; vertical-align: -0.14em; flex: none; }
   @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
@@ -640,7 +642,16 @@ function signalBars(pct) {
 function fillIcons(root) { (root || document).querySelectorAll("[data-ic]").forEach((el) => { el.innerHTML = ic(el.dataset.ic); }); }
 let busy = false, snap = null, curBackend = "compositor", lastHeroKey = "", lastActsJson = "";
 
-function toast(msg, isErr) { const t = $("toast"); t.textContent = msg; t.className = "show" + (isErr ? " err" : ""); setTimeout(() => (t.className = ""), 2600); }
+let toastTimer = null;
+function toast(msg, isErr) {
+  const t = $("toast");
+  clearTimeout(toastTimer);
+  t.textContent = msg;
+  t.className = "show" + (isErr ? " err" : "");
+  // Errors stay until the user dismisses them (click); successes auto-hide.
+  if (isErr) { t.title = "click to dismiss"; t.onclick = () => { t.className = ""; t.onclick = null; t.title = ""; }; }
+  else { t.onclick = null; t.title = ""; toastTimer = setTimeout(() => (t.className = ""), 2600); }
+}
 async function api(method, path, body) {
   const opt = { method, headers: {} };
   if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
