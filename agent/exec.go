@@ -9,18 +9,38 @@ import (
 	"time"
 )
 
-// runNmcli runs nmcli under LC_ALL=C so its status and error messages are always
-// the C-locale English the output classifiers match (wifiNotInRange,
+// runNmcli runs nmcli under the C.UTF-8 locale so its status and error messages
+// are always the C-locale English the output classifiers match (wifiNotInRange,
 // wifiAuthFailure, normalizeSecurity) — regardless of the node's system locale, on
-// which a Finnish/other translation would silently defeat the substring matching.
-// SSID/PSK data is byte-passthrough and unaffected by the locale.
+// which a Finnish/other translation would silently defeat the substring matching —
+// while keeping a UTF-8 charset so non-ASCII SSIDs print as their real bytes.
+// Plain LC_ALL=C would make nmcli substitute every non-ASCII SSID character with
+// '?' on output (e.g. "Jyväskylän" → "Jyv?skyl?n"), mangling the name shown in the
+// UI and, worse, the name the Forget/Connect round-trip sends back.
 func runNmcli(timeout time.Duration, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "nmcli", args...)
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.Env = nmcliEnv()
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
+}
+
+// nmcliEnv forces the C.UTF-8 locale (English, untranslated messages + a UTF-8
+// charset). Any inherited LANG/LANGUAGE/LC_* is stripped first so neither the
+// node's system locale nor a LANGUAGE= translation can leak back in — gettext
+// still honors LANGUAGE under C.UTF-8 (it only ignores it for exactly C/POSIX).
+func nmcliEnv() []string {
+	base := os.Environ()
+	env := make([]string, 0, len(base)+2)
+	for _, kv := range base {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == "LANG" || k == "LANGUAGE" || strings.HasPrefix(k, "LC_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "LC_ALL=C.UTF-8", "LANGUAGE=")
 }
 
 // runShort runs an external command bounded by a timeout and returns its trimmed

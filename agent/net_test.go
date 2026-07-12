@@ -102,24 +102,29 @@ func TestNormalizeSecurity(t *testing.T) {
 func TestParseWifiScan(t *testing.T) {
 	out := "yes:HomeNet:80:WPA2\n" +
 		"no:HomeNet:40:WPA2\n" + // weaker dup → merged
-		"no:Guest:55:\n" + // open
+		"no:Guest:55:\n" + // open, unsaved
 		"no::30:WPA2\n" + // hidden SSID → dropped
+		"no:SavedOpen:50:\n" + // in range, saved, genuinely open
 		"no:Café\\:2:66:WPA3\n"
-	saved := map[string]bool{"HomeNet": true, "OldNet": true}
+	saved := map[string]string{
+		"HomeNet":   "WPA2",
+		"OldNet":    "WPA2", // saved but out of range → folded in; must NOT show "open"
+		"SavedOpen": "",     // saved open → stays open
+	}
 	nets, active := parseWifiScan(out, saved)
 	if active != "HomeNet" {
 		t.Errorf("active = %q, want HomeNet", active)
 	}
-	// SSIDs: HomeNet (merged), Guest, Café:2, plus saved-unseen OldNet
+	// SSIDs: HomeNet (merged), Guest, SavedOpen, Café:2, plus saved-unseen OldNet
 	byName := map[string]WifiNetwork{}
 	for _, n := range nets {
 		byName[n.SSID] = n
 	}
-	if len(nets) != 4 {
-		t.Fatalf("got %d networks (%v), want 4", len(nets), nets)
+	if len(nets) != 5 {
+		t.Fatalf("got %d networks (%v), want 5", len(nets), nets)
 	}
-	if h := byName["HomeNet"]; h.Signal != 80 || !h.Active || !h.Saved {
-		t.Errorf("HomeNet = %+v, want signal 80 active saved", h)
+	if h := byName["HomeNet"]; h.Signal != 80 || !h.Active || !h.Saved || h.Security != "WPA2" {
+		t.Errorf("HomeNet = %+v, want signal 80 active saved WPA2", h)
 	}
 	if g := byName["Guest"]; g.Security != "" || g.Saved {
 		t.Errorf("Guest = %+v, want open, unsaved", g)
@@ -127,12 +132,52 @@ func TestParseWifiScan(t *testing.T) {
 	if _, ok := byName["Café:2"]; !ok {
 		t.Errorf("escaped-colon SSID missing; got %v", nets)
 	}
-	if o := byName["OldNet"]; !o.Saved || o.Signal != 0 {
-		t.Errorf("OldNet = %+v, want saved with 0 signal", o)
+	// A saved network out of range is folded in with its security — not shown "open".
+	if o := byName["OldNet"]; !o.Saved || o.Signal != 0 || o.Security != "WPA2" {
+		t.Errorf("OldNet = %+v, want saved, 0 signal, WPA2 (not open)", o)
+	}
+	// A genuinely-open saved network in range stays open (the live scan wins).
+	if s := byName["SavedOpen"]; !s.Saved || s.Security != "" {
+		t.Errorf("SavedOpen = %+v, want saved and open", s)
 	}
 	// first entry must be the active one (sort order)
 	if nets[0].SSID != "HomeNet" {
 		t.Errorf("first network = %q, want HomeNet (active sorts first)", nets[0].SSID)
+	}
+}
+
+func TestSecurityFromKeyMgmt(t *testing.T) {
+	cases := map[string]string{
+		"":                    "",
+		"   ":                 "",
+		"wpa-psk":             "WPA2",
+		"sae":                 "WPA3",
+		"wpa-eap":             "802.1X",
+		"wpa-eap-suite-b-192": "802.1X",
+		"owe":                 "OWE",
+		"none":                "WEP",
+		"something-new":       "",
+	}
+	for in, want := range cases {
+		if got := securityFromKeyMgmt(in); got != want {
+			t.Errorf("securityFromKeyMgmt(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseKeyMgmt(t *testing.T) {
+	cases := map[string]string{
+		"802-11-wireless-security.key-mgmt:wpa-psk": "WPA2", // the real terse format
+		"802-11-wireless-security.key-mgmt:sae":     "WPA3",
+		"802-11-wireless-security.key-mgmt:none":    "WEP",
+		"802-11-wireless-security.key-mgmt:":        "", // open: empty value
+		"":                                          "", // no output at all → open
+		"wpa-psk":                                   "WPA2", // value-only fallback
+	}
+	for in, want := range cases {
+		if got := parseKeyMgmt(in); got != want {
+			t.Errorf("parseKeyMgmt(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

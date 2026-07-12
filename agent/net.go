@@ -289,7 +289,7 @@ func (n *Net) WifiStatus() WifiInfo {
 	if out, err := runNmcli(5*time.Second, "-t", "-f", "WIFI", "radio"); err == nil {
 		info.Radio = strings.TrimSpace(out)
 	}
-	saved := n.savedWifi() // set of SSID names with a saved connection
+	saved := n.savedWifiSec() // saved SSID → security label (secures out-of-range ones)
 
 	// Scan (a rescan can be slow → a generous bound).
 	out, _ := runNmcli(20*time.Second, "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list")
@@ -299,10 +299,12 @@ func (n *Net) WifiStatus() WifiInfo {
 
 // parseWifiScan turns `nmcli -t -f ACTIVE,SSID,SIGNAL,SECURITY dev wifi list`
 // output into a deduped, sorted network list (merged with the saved set) and the
-// active SSID. Pure (testable): the strongest signal wins per SSID, hidden
-// (empty-SSID) rows are dropped, and saved-but-unseen networks are folded in so
-// they can still be forgotten.
-func parseWifiScan(out string, saved map[string]bool) ([]WifiNetwork, string) {
+// active SSID. saved maps a saved SSID to its security label ("" = open); its keys
+// are the saved set. Pure (testable): the strongest signal wins per SSID, hidden
+// (empty-SSID) rows are dropped, and saved-but-unseen networks are folded in
+// carrying their saved security — so a secured out-of-range network isn't shown
+// "open" — and can still be forgotten.
+func parseWifiScan(out string, saved map[string]string) ([]WifiNetwork, string) {
 	networks := []WifiNetwork{}
 	active := ""
 	seen := map[string]int{} // SSID → index in networks
@@ -314,11 +316,15 @@ func parseWifiScan(out string, saved map[string]bool) ([]WifiNetwork, string) {
 		if len(f) < 2 || f[1] == "" {
 			continue // hidden / empty SSID
 		}
+		// The live scan's SECURITY is authoritative for an in-range network (it
+		// reflects the AP's current advertisement); the saved label only fills the
+		// out-of-range fold-in below, where there is no scan row to carry it.
+		_, isSaved := saved[f[1]]
 		nw := WifiNetwork{
 			SSID:     f[1],
 			Active:   f[0] == "yes",
 			Security: normalizeSecurity(field(f, 3)),
-			Saved:    saved[f[1]],
+			Saved:    isSaved,
 			Signal:   atoiSafe(field(f, 2)),
 		}
 		if nw.Active {
@@ -334,10 +340,11 @@ func parseWifiScan(out string, saved map[string]bool) ([]WifiNetwork, string) {
 		seen[nw.SSID] = len(networks)
 		networks = append(networks, nw)
 	}
-	// Fold in saved networks that were not in range (so they can be forgotten).
-	for ssid := range saved {
+	// Fold in saved networks that were not in range (so they can be forgotten),
+	// carrying their security so a secured-but-unseen network isn't shown "open".
+	for ssid, sec := range saved {
 		if _, ok := seen[ssid]; !ok {
-			networks = append(networks, WifiNetwork{SSID: ssid, Saved: true})
+			networks = append(networks, WifiNetwork{SSID: ssid, Saved: true, Security: sec})
 		}
 	}
 	sortNetworks(networks)
@@ -525,7 +532,8 @@ func (n *Net) wifiDevice() (string, bool) {
 }
 
 // savedWifi returns the set of SSIDs (connection names) with a saved wifi
-// profile. NetworkManager names a wifi profile after its SSID by default.
+// profile — a cheap presence set (one nmcli fork). NetworkManager names a wifi
+// profile after its SSID by default.
 func (n *Net) savedWifi() map[string]bool {
 	out, err := runNmcli(5*time.Second, "-t", "-f", "NAME,TYPE", "connection", "show")
 	saved := map[string]bool{}
@@ -539,6 +547,69 @@ func (n *Net) savedWifi() map[string]bool {
 		}
 	}
 	return saved
+}
+
+// savedWifiSec maps each saved wifi SSID to its security label ("" = open), read
+// from the profile's key-mgmt. Unlike savedWifi (presence only), it forks nmcli
+// once per saved network — needed so a saved-but-out-of-range network, which has
+// no live scan row to carry SECURITY, is shown with its real security instead of
+// "open". On-demand only (GET /api/wifi), so the extra forks are acceptable.
+func (n *Net) savedWifiSec() map[string]string {
+	sec := map[string]string{}
+	for ssid := range n.savedWifi() {
+		sec[ssid] = n.connSecurity(ssid)
+	}
+	return sec
+}
+
+// connSecurity reads a saved connection's Wi-Fi security label from nmcli
+// (802-11-wireless-security.key-mgmt), "" if the network is open or the lookup
+// fails (an open profile has no security setting at all).
+func (n *Net) connSecurity(name string) string {
+	out, err := runNmcli(5*time.Second, "-t", "-f", "802-11-wireless-security.key-mgmt", "connection", "show", "id", name)
+	if err != nil {
+		return ""
+	}
+	return parseKeyMgmt(out)
+}
+
+// parseKeyMgmt extracts the security label from nmcli's terse
+// `-f 802-11-wireless-security.key-mgmt connection show` output — one
+// "802-11-wireless-security.key-mgmt:<value>" line, an empty value (or no line at
+// all) meaning open. Tolerates a value-only line too. Pure (testable).
+func parseKeyMgmt(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, value, found := strings.Cut(line, ":")
+		km := value
+		if !found {
+			km = key // some nmcli builds print the bare value
+		}
+		return securityFromKeyMgmt(km)
+	}
+	return ""
+}
+
+// securityFromKeyMgmt maps an nmcli key-mgmt value to the same short label the
+// scan path uses (see normalizeSecurity). "" = open. wpa-psk covers WPA and WPA2
+// personal indistinguishably → labeled WPA2, the overwhelmingly common case.
+func securityFromKeyMgmt(km string) string {
+	switch strings.TrimSpace(km) {
+	case "sae":
+		return "WPA3"
+	case "wpa-psk":
+		return "WPA2"
+	case "wpa-eap", "wpa-eap-suite-b-192":
+		return "802.1X"
+	case "owe":
+		return "OWE"
+	case "none":
+		return "WEP" // static WEP (key-mgmt=none + a wep-key); open nets have no setting
+	}
+	return ""
 }
 
 // ---- boot-time actions (opt-in) ----
