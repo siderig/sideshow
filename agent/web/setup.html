@@ -107,6 +107,18 @@
   </div>
 
   <div class="panel">
+    <h2>Time zone</h2>
+    <p class="meta" style="margin:0 0 10px">Set the node's clock zone — detect it from this node's network, or pick one.</p>
+    <div class="row" style="margin-top:0">
+      <input type="text" id="tz-input" list="tz-list" placeholder="e.g. Europe/Helsinki" autocomplete="off" style="flex:1;min-width:200px;background:var(--tile);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:9px 12px">
+      <datalist id="tz-list"></datalist>
+      <button id="tz-detect" title="guess from this node's network (sends one request to an external service)">Detect</button>
+      <button class="primary" id="tz-save">Set</button>
+    </div>
+    <p class="meta" id="tz-note" style="margin-top:8px"></p>
+  </div>
+
+  <div class="panel">
     <h2>Finish</h2>
     <p class="meta" id="finish-note">When the features you need are installed, finish setup. You can install more later from Settings.</p>
     <div class="row"><button class="primary" id="finish-btn">Finish setup →</button></div>
@@ -239,8 +251,35 @@ $("sw-tls").onchange = async (e) => {
   catch (err) { secNote(err.message, "warn"); e.target.checked = !enabled; }
 };
 
+// ---- time zone ----
+// tzNote writes via textContent (never innerHTML) so a server- or geolocation-
+// supplied zone string can't inject markup on this pre-auth page.
+function tzNote(msg, cls) { const el = $("tz-note"); el.textContent = msg || ""; el.className = "meta" + (cls ? " " + cls : ""); }
+async function loadTimezone() {
+  try {
+    const d = await api("GET", "/api/timezone");
+    const list = $("tz-list"); list.innerHTML = "";
+    (d.zones || []).forEach(z => { const o = document.createElement("option"); o.value = z; list.appendChild(o); });
+    if (d.current && !$("tz-input").value) $("tz-input").value = d.current;
+    if (d.can_set === false) { $("tz-input").disabled = $("tz-save").disabled = $("tz-detect").disabled = true; tzNote("timedatectl is not available on this node."); }
+  } catch (e) { tzNote("You can also set the time zone later from Settings.", ""); }
+}
+$("tz-detect").onclick = async () => {
+  $("tz-detect").disabled = true; tzNote("detecting from the network…");
+  try { const d = await api("POST", "/api/timezone/detect"); $("tz-input").value = d.zone; tzNote("guessed " + d.zone + " — review, then Set to apply", "ok"); }
+  catch (e) { tzNote(e.message, "warn"); }
+  finally { $("tz-detect").disabled = false; }
+};
+$("tz-save").onclick = async () => {
+  const zone = $("tz-input").value.trim();
+  if (!zone) { tzNote("enter a time zone", "warn"); return; }
+  try { const info = await api("POST", "/api/timezone", { zone }); tzNote("time zone set to " + info.current, "ok"); }
+  catch (e) { tzNote(e.message, "warn"); }
+};
+
 load("");
 loadSecurity();
+loadTimezone();
 </script>
 </body>
 </html>

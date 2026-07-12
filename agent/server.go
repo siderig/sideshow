@@ -40,11 +40,12 @@ type Server struct {
 	tlsm      *TLSManager
 	scheduler *Scheduler
 	mem       *Memory
+	tz        *Timezone
 	mux       *http.ServeMux
 }
 
 func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, vnc *VNC, display *Display, power *Power, content *Content, plymouth *Plymouth, state *State, library *Library, playlist *Playlist, actions *Actions, miracast *Miracast, netmgr *Net, setup *Setup, ts *Tailscale) *Server {
-	s := &Server{cfg: cfg, sup: sup, stats: stats, apt: apt, cec: cec, vnc: vnc, display: display, power: power, content: content, plymouth: plymouth, state: state, library: library, playlist: playlist, actions: actions, miracast: miracast, net: netmgr, setup: setup, ts: ts, mem: NewMemory(cfg), mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, sup: sup, stats: stats, apt: apt, cec: cec, vnc: vnc, display: display, power: power, content: content, plymouth: plymouth, state: state, library: library, playlist: playlist, actions: actions, miracast: miracast, net: netmgr, setup: setup, ts: ts, mem: NewMemory(cfg), tz: NewTimezone(), mux: http.NewServeMux()}
 	s.mux.HandleFunc("/api/auth", s.handleAuth)
 	s.mux.HandleFunc("/api/logout", s.handleLogout)
 	s.mux.HandleFunc("/api/health", s.handleHealth)
@@ -68,6 +69,8 @@ func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, v
 	s.mux.HandleFunc("/api/action/", s.handleActionFire)
 	s.mux.HandleFunc("/api/miracast", s.handleMiracast)
 	s.mux.HandleFunc("/api/hostname", s.handleHostname)
+	s.mux.HandleFunc("/api/timezone", s.handleTimezone)
+	s.mux.HandleFunc("/api/timezone/detect", s.handleTimezoneDetect)
 	s.mux.HandleFunc("/api/wifi", s.handleWifi)
 	s.mux.HandleFunc("/api/wifi/delete", s.handleWifiForget)
 	s.mux.HandleFunc("/api/tailscale", s.handleTailscale)
@@ -250,6 +253,7 @@ type Snapshot struct {
 	CurrentAction string             `json:"current_action,omitempty"`
 	Miracast      MiracastInfo       `json:"miracast"`
 	Net           NetInfo            `json:"net"`
+	Timezone      TimezoneInfo       `json:"timezone"`
 	Tailscale     TailscaleInfo      `json:"tailscale"`
 	TLS           TLSInfo            `json:"tls"`
 	Input         InputInfo          `json:"input"`
@@ -343,6 +347,7 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		CurrentAction: s.actions.CurrentSlug(curMode),
 		Miracast:      s.miracast.Info(),
 		Net:           s.net.Info(),
+		Timezone:      s.tz.Info(),
 		Tailscale:     s.ts.Info(),
 		TLS:           s.tlsInfo(),
 		Input:         s.inputInfo(),
@@ -643,6 +648,50 @@ func (s *Server) handleHostname(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use GET or POST")})
 	}
+}
+
+// handleTimezone returns (GET) the current zone + settable flag + the full
+// picker list (the list forks timedatectl, so it is served here on demand, not
+// in the snapshot), or sets the zone (POST {"zone":"…"}). A set takes effect
+// system-wide immediately; the agent's own scheduler adopts the new zone at its
+// next restart (Go caches the process's local zone).
+func (s *Server) handleTimezone(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, 200, s.tz.Full())
+	case http.MethodPost:
+		var body struct {
+			Zone string `json:"zone"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+			writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+			return
+		}
+		info, err := s.tz.Set(body.Zone)
+		if err != nil {
+			writeErr(w, &apiError{code: 400, err: err})
+			return
+		}
+		writeJSON(w, 200, info)
+	default:
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use GET or POST")})
+	}
+}
+
+// handleTimezoneDetect guesses the node's zone from its public IP via a public
+// geolocation service (POST). Opt-in — the operator triggers it, and the guess
+// is only suggested to the UI, never applied. Returns {"zone":"…"}.
+func (s *Server) handleTimezoneDetect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
+		return
+	}
+	zone, err := s.tz.Detect(r.Context())
+	if err != nil {
+		writeErr(w, &apiError{code: 502, err: err})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"zone": zone})
 }
 
 // handleWifi lists Wi-Fi state (GET — a live nmcli scan + saved networks) or

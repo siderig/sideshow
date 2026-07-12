@@ -442,10 +442,16 @@
     <details class="sect" open>
       <summary><span class="ic" data-ic="id"></span> Node <span class="tag" id="set-node-tag"></span></summary>
       <div class="body">
-        <div class="kv" style="margin-top:12px"><span>name</span><span class="mono" id="set-node-name">—</span></div>
+        <div class="kv" style="margin-top:12px"><span>name</span><span class="mono" id="set-node-name">—</span><span>time zone</span><span class="mono" id="set-node-tz">—</span></div>
         <label>Rename node <span class="meta">— the hostname the fleet sees</span></label>
         <div class="row"><input type="text" id="host-name" placeholder="e.g. lobby-screen" style="flex:1"><button class="primary" id="host-save">Rename</button></div>
         <p class="meta" id="host-note" style="margin-top:8px"></p>
+        <label style="margin-top:16px">Time zone <span class="meta">— the node's system clock zone</span></label>
+        <div class="row"><input type="text" id="tz-input" list="tz-list" placeholder="e.g. Europe/Helsinki" style="flex:1;min-width:160px" autocomplete="off">
+          <datalist id="tz-list"></datalist>
+          <button id="tz-detect" title="guess from this node's network location (sends one request to an external service)">Detect</button>
+          <button class="primary" id="tz-save">Set</button></div>
+        <p class="meta" id="tz-note" style="margin-top:8px"></p>
       </div>
     </details>
     <details class="sect" id="wifi-sect">
@@ -669,6 +675,7 @@ document.querySelectorAll("nav.tabs button[data-view]").forEach(b => b.onclick =
   document.querySelectorAll("#view-control,#view-library,#view-schedule,#view-settings").forEach(v => v.classList.toggle("on", v.id === "view-" + b.dataset.view));
   if (b.dataset.view === "library") { loadMedia(curMediaPath); }
   if (b.dataset.view === "schedule") loadSchedule();
+  if (b.dataset.view === "settings") loadTimezones();
 });
 
 // ---- auth ----
@@ -859,6 +866,7 @@ function render(s) {
   renderRecent((s.state && s.state.history) || []);
   renderSettings(s);
   renderNet(s);
+  renderTimezone(s);
   renderSecurity(s);
   renderInput(s);
   renderWebRecent(s);
@@ -1182,6 +1190,45 @@ $("host-save").onclick = async () => {
   try { const info = await api("POST", "/api/hostname", { name }); toast("renamed to " + info.hostname); $("host-name").value = ""; pollSnapshot(); }
   catch (e) { toast(e.message, true); }
 };
+
+// ---- Settings: time zone ----
+let tzLoaded = false, tzBusy = false;
+function renderTimezone(s) {
+  const tz = s.timezone || {}, cur = tz.current || "";
+  let label = cur || "—";
+  if (cur) { try { label = cur + " · " + new Intl.DateTimeFormat([], { timeZone: cur, hour: "2-digit", minute: "2-digit" }).format(new Date()); } catch (e) {} }
+  $("set-node-tz").textContent = label;
+  const inp = $("tz-input"), save = $("tz-save"), detect = $("tz-detect"), note = $("tz-note");
+  const off = tz.can_set === false;
+  inp.disabled = save.disabled = off;
+  if (!tzBusy) detect.disabled = off;
+  if (off) { note.textContent = "timedatectl is not available on this node."; return; }
+  if (document.activeElement !== inp && !inp.value) inp.value = cur;
+  if (!note.textContent) note.textContent = "Type to search zones. Applies immediately; the agent's own schedule adopts it after its next restart.";
+}
+async function loadTimezones() {
+  if (tzLoaded) return; tzLoaded = true;
+  try {
+    const d = await api("GET", "/api/timezone");
+    const list = $("tz-list"); list.innerHTML = "";
+    (d.zones || []).forEach(z => { const o = document.createElement("option"); o.value = z; list.appendChild(o); });
+    const inp = $("tz-input");
+    if (document.activeElement !== inp && !inp.value) inp.value = d.current || "";
+  } catch (e) { tzLoaded = false; }
+}
+$("tz-save").onclick = async () => {
+  const zone = $("tz-input").value.trim();
+  if (!zone) { toast("enter a time zone", true); return; }
+  try { const info = await api("POST", "/api/timezone", { zone }); toast("time zone set to " + info.current); $("tz-note").textContent = "Set to " + info.current + " — the agent's own schedule adopts it after its next restart."; pollSnapshot(); }
+  catch (e) { toast(e.message, true); }
+};
+$("tz-detect").onclick = async () => {
+  tzBusy = true; $("tz-detect").disabled = true; $("tz-note").textContent = "detecting from the network…";
+  try { const d = await api("POST", "/api/timezone/detect"); $("tz-input").value = d.zone; $("tz-note").textContent = "Guessed " + d.zone + " from this node's network — review, then Set to apply."; }
+  catch (e) { $("tz-note").textContent = e.message; toast(e.message, true); }
+  finally { tzBusy = false; $("tz-detect").disabled = false; }
+};
+
 async function loadWifi() {
   $("wifi-status").textContent = "scanning…";
   try { renderWifi(await api("GET", "/api/wifi")); }

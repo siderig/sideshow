@@ -261,6 +261,7 @@ cached `Info()` of every manager. Fields:
   "playlist":  { "count": 3, "show_url": "http://127.0.0.1/show" }, // cheap summary; items on demand
   "miracast":  { … },        // MiracastInfo
   "net":       { … },        // NetInfo (hostname/suggested/can_rename/protected/comitup/wifi.supported/link)
+  "timezone":  { "current": "Europe/Helsinki", "can_set": true }, // system zone (read fork-free)
   "caps":      { "shutdown": true, "miracast": false }  // agent-level gates for showing/hiding controls
 }
 ```
@@ -762,6 +763,33 @@ active mode.
 - `POST /api/wifi/delete {"ssid":"…"}` — forgets a saved connection (`nmcli connection delete`); only
   an SSID that already has a saved profile is accepted. `400` otherwise. Returns the refreshed
   `WifiStatus`.
+
+### Time zone (`/api/timezone`)
+
+Reads and sets the node's **system** time zone via `timedatectl`. The current zone rides the snapshot
+(`snapshot.timezone`), read **fork-free** at startup from `/etc/timezone` (Debian) with an
+`/etc/localtime` symlink fallback, and updated in place on a set. Note: `timedatectl set-timezone`
+changes the system zone (clock, logs, kiosk content) **immediately**, but the agent's own process keeps
+the zone it booted with (Go caches `time.Local`), so the agent's local-time scheduler (weekly.go) only
+adopts the new zone after the **agent's next restart**.
+
+- `GET /api/timezone` → `{ current, can_set, zones:[…] }`. `current` is the IANA name (`""` if unknown);
+  `can_set` = `timedatectl` is present; `zones` is the full picker list (`timedatectl list-timezones`,
+  cached after the first call, `[]` on a node without `timedatectl`). The zone list forks, so it is
+  served here on demand — **not** in the snapshot.
+- `POST /api/timezone {"zone":"Europe/Helsinki"}` → sets it (`timedatectl set-timezone`). The name is
+  gated by a strict syntactic allowlist (defense-in-depth before exec) **and** checked against the
+  local zoneinfo database. `400` on an invalid/unknown zone or a node without `timedatectl`. Returns
+  `{ current, can_set }`.
+- `POST /api/timezone/detect` → `{ "zone": "Europe/Helsinki" }` — guesses the zone from the node's
+  **public IP** via a third-party geolocation service (`ipapi.co`, one bounded HTTPS request). Opt-in:
+  triggered by an explicit operator action, and the guess is only **suggested** (the UI pre-fills it),
+  never auto-applied. `502` if the service is unreachable or returns something that isn't a valid zone.
+  This is the only endpoint that reaches a non-first-party host; nothing on the node calls it
+  automatically.
+
+Both the Settings → Node panel and the first-run setup wizard expose the zone picker + a "Detect"
+button.
 
 ### `GET /api/input` · `POST /api/input` → local keyboard/mouse policy
 
