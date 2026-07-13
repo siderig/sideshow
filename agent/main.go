@@ -327,8 +327,11 @@ func main() {
 	// flag to complete so the first-run wizard + its pre-auth /setup exemption stay
 	// inert (older state.json predates the flag being written). Synchronous, before
 	// the HTTP server starts, so there is no window where /setup is reachable
-	// pre-auth on a live node.
-	if restored && !state.SetupComplete() {
+	// pre-auth on a live node. EXCEPT when the restored mode is the setup wizard
+	// itself: that is a fresh node that just hasn't finished setup, not a
+	// provisioned one — marking it complete would 401 its own /setup kiosk. (Belt to
+	// recordActive's suspenders, which stops the setup URL being persisted at all.)
+	if restored && !state.SetupComplete() && !isSetupBootstrapMode(initial, cfg) {
 		state.SetSetupComplete(true)
 	}
 	if !restored {
@@ -368,8 +371,11 @@ func main() {
 				log.Printf("restored persisted mode %q; -url/-start-mode now apply on first boot only", initial.label())
 			} else {
 				// Record what actually came up (from Status, the race-free source of
-				// truth) so a fresh node pins the operator's -url once.
-				state.RecordMode(modeFromStatus(sup.Status()))
+				// truth) so a fresh node pins the operator's -url once. recordActive
+				// skips the setup bootstrap surface, so an unprovisioned node persists
+				// no active mode and stays unprovisioned across restarts until the
+				// wizard finishes — closing the self-lockout.
+				srv.recordActive()
 			}
 		}()
 	}

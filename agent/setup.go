@@ -283,6 +283,22 @@ func setupURL(cfg *Config) string {
 	return "http://127.0.0.1:" + port + "/setup"
 }
 
+// isSetupBootstrapMode reports whether m is the first-run wizard surface the agent
+// points the kiosk at on an unprovisioned node (setupURL). That surface is a
+// transient BOOTSTRAP, not an operator-chosen mode: it must never be recorded as
+// the persisted "active" mode, nor counted by the provisioned-node migration.
+// Otherwise a restart (the agent is Restart=always) restores /setup, the migration
+// flips SetupComplete=true, and /setup then falls behind the key (setupExempt only
+// holds while !SetupComplete) — so the kiosk's own request to /setup 401s and the
+// node locks itself out of its own wizard.
+func isSetupBootstrapMode(m Mode, cfg *Config) bool {
+	if m.Type != ModeWeb {
+		return false
+	}
+	url, _ := m.Params["url"].(string)
+	return url != "" && url == setupURL(cfg)
+}
+
 // userExists reports whether a local user account exists.
 func userExists(name string) bool {
 	if name == "" {

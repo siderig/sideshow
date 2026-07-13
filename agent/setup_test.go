@@ -87,6 +87,42 @@ func TestSetupURL(t *testing.T) {
 	}
 }
 
+// TestIsSetupBootstrapMode guards the self-lockout fix: the first-run /setup kiosk
+// mode must be recognized (so it is never persisted/migrated), while real modes and
+// non-web modes must not be — else the node either re-locks or never restores.
+func TestIsSetupBootstrapMode(t *testing.T) {
+	cfg := &Config{Addr: ":80"}
+	// The bootstrap surface, exactly as main() builds it and as it round-trips
+	// through state.json (params come back as interface-typed strings).
+	setup := Mode{Type: ModeWeb, Params: map[string]any{"url": setupURL(cfg)}}
+	if !isSetupBootstrapMode(setup, cfg) {
+		t.Error("the /setup kiosk mode must be recognized as the bootstrap surface")
+	}
+	restored := Mode{Type: ModeWeb, Params: map[string]any{"url": any(setupURL(cfg))}}
+	if !isSetupBootstrapMode(restored, cfg) {
+		t.Error("a restored (interface-typed) /setup url must still match")
+	}
+	// A real operator URL is a genuine mode — must be persisted/migrated normally.
+	if isSetupBootstrapMode(Mode{Type: ModeWeb, Params: map[string]any{"url": "https://example.com"}}, cfg) {
+		t.Error("a real web URL must not be treated as the setup bootstrap")
+	}
+	// Non-web modes and empty/absent urls are never the bootstrap.
+	for _, m := range []Mode{
+		{Type: ModeOff},
+		{Type: ModeApp, Params: map[string]any{"url": setupURL(cfg)}}, // url on a non-web mode
+		{Type: ModeWeb, Params: map[string]any{"url": ""}},
+		{Type: ModeWeb},
+	} {
+		if isSetupBootstrapMode(m, cfg) {
+			t.Errorf("mode %+v must not be treated as the setup bootstrap", m)
+		}
+	}
+	// The match is addr-aware: the same path on a different port is a different URL.
+	if isSetupBootstrapMode(setup, &Config{Addr: ":8080"}) {
+		t.Error("setup mode built for :80 must not match a node serving on :8080")
+	}
+}
+
 func contains(ss []string, s string) bool {
 	for _, x := range ss {
 		if x == s {

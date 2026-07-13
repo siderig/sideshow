@@ -1115,7 +1115,16 @@ func modeFromStatus(ms ModeStatus) Mode {
 // output-content routing and in-place URL re-navigations record correctly too.
 // Deliberately NOT called for transient stops (power.Standby) so a reboot after
 // standby comes back to the last real content rather than a black screen.
-func (s *Server) recordActive() { s.state.RecordMode(modeFromStatus(s.sup.Status())) }
+func (s *Server) recordActive() {
+	m := modeFromStatus(s.sup.Status())
+	// The first-run wizard is a transient bootstrap surface, never an operator
+	// choice — persisting it would let a restart restore /setup and the
+	// provisioned-node migration then lock the node out of its own wizard.
+	if isSetupBootstrapMode(m, s.cfg) {
+		return
+	}
+	s.state.RecordMode(m)
+}
 
 // handleURL is sugar for switching to / re-navigating a web mode.
 func (s *Server) handleURL(w http.ResponseWriter, r *http.Request) {
