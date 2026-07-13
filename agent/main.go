@@ -96,6 +96,7 @@ type Config struct {
 	AuthKeyFile     string // file holding the UI/API auth key (empty/missing → no auth)
 	AuthKey         string // resolved auth key (from -auth-key or the key file)
 	InitAuthKey     bool   // first-run provisioning: mint a random key at -auth-key-file if it is missing/empty
+	AuthorizedKeysFile string // SSH authorized_keys the UI installs keys into (default root's)
 	AllowShutdown   bool   // allow POST /api/shutdown (poweroff) — off for unattended nodes
 	AllowCustomRoot bool   // allow custom app modes to run as ROOT on the framebuffer (display=kms)
 	NodeLabel       string // human label (e.g. "Lobby screen") for the fleet view
@@ -184,6 +185,7 @@ func main() {
 	flag.StringVar(&cfg.AuthKeyFile, "auth-key-file", "/etc/sideshow/agent.key", "file holding the UI/API key (missing/empty → no auth)")
 	flag.StringVar(&cfg.AuthKey, "auth-key", "", "UI/API key (overrides -auth-key-file; mainly for testing)")
 	flag.BoolVar(&cfg.InitAuthKey, "init-auth-key", false, "first-run provisioning: mint a unique random key at -auth-key-file if it is missing/empty (used by flashed images so no shared secret is ever baked in)")
+	flag.StringVar(&cfg.AuthorizedKeysFile, "authorized-keys-file", "/root/.ssh/authorized_keys", "SSH authorized_keys the control UI installs public keys into (root login → lets the operator reach a headless node's shell)")
 	flag.StringVar(&cfg.HTTPSAddr, "https-addr", ":443", "listen address for the opt-in self-signed HTTPS listener (served alongside -addr when enabled)")
 	flag.StringVar(&cfg.TailscaleAuthKeyFile, "tailscale-authkey-file", "/etc/sideshow/tailscale.authkey", "staged Tailscale pre-auth key: if present at first boot the node joins the tailnet, then the file is shredded (flashed images); missing = never auto-joins")
 	flag.BoolVar(&cfg.AllowShutdown, "allow-shutdown", true, "allow POST /api/shutdown (poweroff); set false on unattended nodes that can't be powered back on remotely")

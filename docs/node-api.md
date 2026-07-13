@@ -788,6 +788,30 @@ adopts the new zone after the **agent's next restart**.
   This is the only endpoint that reaches a non-first-party host; nothing on the node calls it
   automatically.
 
+### SSH access (`/api/ssh-keys`)
+
+Installs SSH **authorized keys** from the control UI so a node — especially a headless flashed one —
+can be reached over SSH. Keys go to **root's** `authorized_keys` (`-authorized-keys-file`, default
+`/root/.ssh/authorized_keys`): root login is what lets the operator read the node's self-minted
+`/etc/sideshow/agent.key` and drive `systemd`. Installing the first key **enables `sshd`** (flashed
+images ship `openssh-server` installed but disabled). Only **public** keys are accepted; the raw key is
+validated (known key type, base64 whose embedded algorithm matches, no options prefix, single line) and
+re-serialized canonically before it touches the file. The file is written `0600` under a `0700` dir.
+
+- `GET /api/ssh-keys` → `{ installed, active, target, keys:[{ type, fingerprint, comment }] }`.
+  `installed` = an `sshd` binary is present; `active` = the ssh service is running; `target` = the
+  account (e.g. `root`). Fingerprints are OpenSSH `SHA256:…`.
+- `POST /api/ssh-keys {"key":"ssh-ed25519 AAAA… you@host"}` → validates + appends it (idempotent by
+  fingerprint) and enables `sshd`. `400` on a malformed key. Returns the refreshed `GET` payload.
+- `POST /api/ssh-keys/delete {"fingerprint":"SHA256:…"}` → removes one key, preserving every other line.
+  `404` if absent. **Always requires the key** (never part of the pre-auth surface).
+
+> **Pre-auth exposure.** `GET`/`POST /api/ssh-keys` are reachable **without the key while `!SetupComplete`**
+> (the first-run wizard), so a fresh headless node can be made SSH-reachable before any key exists — the
+> same window `/setup` itself is open in. This is a deliberate hole under the setup model's "the LAN is
+> trusted during onboarding" assumption: a client on the LAN during setup could plant its own root key.
+> The wizard warns; removal stays gated; and it closes the moment setup finishes.
+
 Both the Settings → Node panel and the first-run setup wizard expose the zone picker + a "Detect"
 button.
 

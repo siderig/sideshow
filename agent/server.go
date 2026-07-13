@@ -41,11 +41,12 @@ type Server struct {
 	scheduler *Scheduler
 	mem       *Memory
 	tz        *Timezone
+	ssh       *SSHKeys
 	mux       *http.ServeMux
 }
 
 func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, vnc *VNC, display *Display, power *Power, content *Content, plymouth *Plymouth, state *State, library *Library, playlist *Playlist, actions *Actions, miracast *Miracast, netmgr *Net, setup *Setup, ts *Tailscale) *Server {
-	s := &Server{cfg: cfg, sup: sup, stats: stats, apt: apt, cec: cec, vnc: vnc, display: display, power: power, content: content, plymouth: plymouth, state: state, library: library, playlist: playlist, actions: actions, miracast: miracast, net: netmgr, setup: setup, ts: ts, mem: NewMemory(cfg), tz: NewTimezone(), mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, sup: sup, stats: stats, apt: apt, cec: cec, vnc: vnc, display: display, power: power, content: content, plymouth: plymouth, state: state, library: library, playlist: playlist, actions: actions, miracast: miracast, net: netmgr, setup: setup, ts: ts, mem: NewMemory(cfg), tz: NewTimezone(), ssh: NewSSHKeys(cfg), mux: http.NewServeMux()}
 	s.mux.HandleFunc("/api/auth", s.handleAuth)
 	s.mux.HandleFunc("/api/logout", s.handleLogout)
 	s.mux.HandleFunc("/api/health", s.handleHealth)
@@ -71,6 +72,8 @@ func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, v
 	s.mux.HandleFunc("/api/hostname", s.handleHostname)
 	s.mux.HandleFunc("/api/timezone", s.handleTimezone)
 	s.mux.HandleFunc("/api/timezone/detect", s.handleTimezoneDetect)
+	s.mux.HandleFunc("/api/ssh-keys", s.handleSSHKeys)
+	s.mux.HandleFunc("/api/ssh-keys/delete", s.handleSSHKeyDelete)
 	s.mux.HandleFunc("/api/wifi", s.handleWifi)
 	s.mux.HandleFunc("/api/wifi/delete", s.handleWifiForget)
 	s.mux.HandleFunc("/api/tailscale", s.handleTailscale)
@@ -173,6 +176,13 @@ func (s *Server) setupExempt(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/setup", "/api/setup", "/api/setup/install", "/api/setup/finish":
 		return true
+	case "/api/ssh-keys":
+		// GET (list) + POST (add) are exempt so the wizard can make a fresh headless
+		// node SSH-reachable before any key exists. This is a DELIBERATE pre-auth
+		// hole (a LAN client during setup could plant its own root key) accepted
+		// under the "LAN is trusted during onboarding" model; the wizard warns. Key
+		// REMOVAL (/api/ssh-keys/delete) is a different path and stays gated.
+		return r.Method == http.MethodGet || r.Method == http.MethodPost
 	}
 	// NOTE: the Tailscale/TLS endpoints are deliberately NOT exempt. Joining a
 	// tailnet or toggling TLS is security-sensitive and must always require the
@@ -692,6 +702,61 @@ func (s *Server) handleTimezoneDetect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"zone": zone})
+}
+
+// handleSSHKeys lists the installed SSH authorized keys (GET) or installs one
+// (POST {"key":"ssh-… …"}). A key grants shell access to the node (root), and the
+// first add enables sshd. Reachable pre-auth during first-run setup (setupExempt)
+// so a fresh headless node can be made SSH-reachable; gated by the key afterward.
+func (s *Server) handleSSHKeys(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, 200, s.ssh.Info())
+	case http.MethodPost:
+		var body struct {
+			Key string `json:"key"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+			writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+			return
+		}
+		key, err := s.ssh.Add(body.Key)
+		if err != nil {
+			writeErr(w, &apiError{code: 400, err: err})
+			return
+		}
+		// Log the source so a pre-auth (setup-window) install is auditable.
+		log.Printf("[ssh] key %s installed via API (setup_complete=%v)", key.Fingerprint, s.state.SetupComplete())
+		writeJSON(w, 200, s.ssh.Info())
+	default:
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use GET or POST")})
+	}
+}
+
+// handleSSHKeyDelete removes an installed key by fingerprint. POST
+// {"fingerprint":"SHA256:…"}. Always authed — never part of the pre-auth surface.
+func (s *Server) handleSSHKeyDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use POST")})
+		return
+	}
+	var body struct {
+		Fingerprint string `json:"fingerprint"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, &apiError{code: 400, err: fmt.Errorf("invalid JSON: %w", err)})
+		return
+	}
+	ok, err := s.ssh.Remove(body.Fingerprint)
+	if err != nil {
+		writeErr(w, &apiError{code: 400, err: err})
+		return
+	}
+	if !ok {
+		writeErr(w, &apiError{code: 404, err: fmt.Errorf("no installed key with that fingerprint")})
+		return
+	}
+	writeJSON(w, 200, s.ssh.Info())
 }
 
 // handleWifi lists Wi-Fi state (GET — a live nmcli scan + saved networks) or

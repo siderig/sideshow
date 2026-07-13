@@ -28,7 +28,7 @@ echo ">> [provision] compositor=$COMPOSITOR seat-user=$SEATUSER"
 # per package (a suite may lack uxplay/wayvnc — the matching mode just 400s).
 # Chromium is installed separately: the package is `chromium` on Debian but
 # `chromium-browser` on Raspberry Pi OS.
-CORE="ca-certificates curl plymouth plymouth-themes network-manager \
+CORE="ca-certificates curl openssh-server plymouth plymouth-themes network-manager \
   cloud-guest-utils e2fsprogs unattended-upgrades \
   gcc make pkg-config libdrm-dev libegl-dev libgles-dev libgbm-dev"
 if [ "$COMPOSITOR" = wayland ]; then
@@ -183,6 +183,9 @@ systemctl set-default multi-user.target 2>/dev/null || true
 systemctl enable sideshow-expand-rootfs.service 2>/dev/null || true
 systemctl enable sideshow-agent.service 2>/dev/null || true
 systemctl enable NetworkManager.service 2>/dev/null || true
+# SSH is installed but OFF by default (the image ships no keys). The control UI's
+# SSH panel installs an authorized key and turns sshd on then (agent ensureSSHD).
+systemctl disable ssh.service 2>/dev/null || true
 # tailscaled ready-but-idle (logged out) so the opt-in tailnet join works instantly.
 command -v tailscale >/dev/null 2>&1 && systemctl enable tailscaled.service 2>/dev/null || true
 [ "$COMPOSITOR" = wayland ] && systemctl enable seatd.service 2>/dev/null || true

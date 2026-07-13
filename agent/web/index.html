@@ -467,6 +467,15 @@
         <p class="meta" id="wifi-note" style="margin-top:8px">Join or forget Wi-Fi networks (via NetworkManager). Passwords are never shown or stored in the panel.</p>
       </div>
     </details>
+    <details class="sect" id="ssh-sect">
+      <summary><span class="ic" data-ic="terminal"></span> SSH access <span class="tag" id="ssh-tag"></span></summary>
+      <div class="body">
+        <div id="ssh-list" class="list" style="margin-top:12px"></div>
+        <label style="margin-top:16px">Add a public key <span class="meta">— paste an <span class="mono">id_ed25519.pub</span> / <span class="mono">id_rsa.pub</span> line</span></label>
+        <div class="row"><input type="text" id="ssh-key" placeholder="ssh-ed25519 AAAA… you@host" style="flex:1;min-width:220px"><button class="primary" id="ssh-add">Add key</button></div>
+        <p class="meta" id="ssh-note" style="margin-top:8px"></p>
+      </div>
+    </details>
     <details class="sect" id="sec-sect">
       <summary><span class="ic" data-ic="lock"></span> Security &amp; encryption <span class="tag" id="sec-tag"></span></summary>
       <div class="body">
@@ -1291,6 +1300,46 @@ $("wifi-add").onclick = async () => {
 };
 $("wifi-scan").onclick = loadWifi;
 $("wifi-sect").addEventListener("toggle", (e) => { if (e.target.open && !wifiLoaded) { wifiLoaded = true; loadWifi(); } });
+
+let sshLoaded = false;
+async function loadSSH() {
+  try { renderSSH(await api("GET", "/api/ssh-keys")); }
+  catch (e) { $("ssh-note").textContent = e.message; }
+}
+function renderSSH(info) {
+  const box = $("ssh-list"), note = $("ssh-note"), tag = $("ssh-tag");
+  const keys = info.keys || [];
+  tag.textContent = keys.length ? (keys.length + (keys.length === 1 ? " key" : " keys")) : "";
+  box.innerHTML = "";
+  if (!keys.length) box.innerHTML = '<div class="empty">no keys installed — add one below to enable SSH</div>';
+  keys.forEach(k => {
+    const row = document.createElement("div"); row.className = "lrow";
+    row.innerHTML = '<span class="ic">' + ic("terminal") + '</span><div class="main"><div class="t"></div><div class="s"></div></div><div class="acts"></div>';
+    row.querySelector(".t").textContent = k.comment || k.type;
+    row.querySelector(".s").textContent = [k.type, k.fingerprint].filter(Boolean).join(" · ");
+    const b = document.createElement("button"); b.className = "danger"; b.textContent = "Remove"; b.title = "remove this key";
+    b.onclick = () => sshRemove(k);
+    row.querySelector(".acts").appendChild(b);
+    box.appendChild(row);
+  });
+  note.textContent = !info.installed
+    ? "No SSH server is installed on this node — a key can be added but won't take effect until openssh-server is present."
+    : "Keys grant shell access" + (info.target ? " as " + info.target : "") + (info.active ? " · SSH is on." : " · SSH turns on when you add the first key.") + " Paste public keys only — private keys never leave your machine.";
+}
+async function sshAdd() {
+  const key = $("ssh-key").value.trim();
+  if (!key) { toast("paste a public key", true); return; }
+  try { renderSSH(await api("POST", "/api/ssh-keys", { key })); $("ssh-key").value = ""; toast("SSH key installed"); }
+  catch (e) { toast(e.message, true); }
+}
+async function sshRemove(k) {
+  if (!confirm("Remove SSH key " + (k.comment || k.fingerprint) + "?")) return;
+  try { renderSSH(await api("POST", "/api/ssh-keys/delete", { fingerprint: k.fingerprint })); toast("key removed"); }
+  catch (e) { toast(e.message, true); }
+}
+$("ssh-add").onclick = sshAdd;
+$("ssh-key").addEventListener("keydown", (e) => { if (e.key === "Enter") sshAdd(); });
+$("ssh-sect").addEventListener("toggle", (e) => { if (e.target.open && !sshLoaded) { sshLoaded = true; loadSSH(); } });
 
 // ---- Security: Tailscale overlay + self-signed HTTPS ----
 let tsNoteUntil = 0; // while Date.now() < this, a transient error stays in #ts-note (the poll won't wipe it)

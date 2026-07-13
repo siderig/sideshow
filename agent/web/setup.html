@@ -107,6 +107,17 @@
   </div>
 
   <div class="panel">
+    <h2>SSH access <span class="meta" style="text-transform:none;letter-spacing:0">— optional</span></h2>
+    <p class="meta" style="margin:0 0 10px">Paste a public key to reach this node over SSH (as <span class="mono" id="ssh-target">root</span>) — useful for a headless box. <b>Only add a key on a network you trust:</b> during setup this step is unauthenticated.</p>
+    <div class="row" style="margin-top:0">
+      <input type="text" id="ssh-key" placeholder="ssh-ed25519 AAAA… you@host" style="flex:1;min-width:220px;background:var(--tile);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:9px 12px">
+      <button class="primary" id="ssh-add">Add key</button>
+    </div>
+    <div id="ssh-list" style="margin-top:10px"></div>
+    <p class="meta" id="ssh-note" style="margin-top:8px"></p>
+  </div>
+
+  <div class="panel">
     <h2>Time zone</h2>
     <p class="meta" style="margin:0 0 10px">Set the node's clock zone — detect it from this node's network, or pick one.</p>
     <div class="row" style="margin-top:0">
@@ -251,6 +262,36 @@ $("sw-tls").onchange = async (e) => {
   catch (err) { secNote(err.message, "warn"); e.target.checked = !enabled; }
 };
 
+// ---- SSH access (pre-auth: list + add only; removal is gated, done later from Settings) ----
+async function loadSSHSetup() {
+  try { renderSSHSetup(await api("GET", "/api/ssh-keys")); } catch (e) {}
+}
+function renderSSHSetup(s) {
+  if (s.target) $("ssh-target").textContent = s.target;
+  const box = $("ssh-list"), note = $("ssh-note");
+  const keys = s.keys || [];
+  box.innerHTML = "";
+  keys.forEach(k => {
+    // textContent only — a server-supplied comment/fingerprint can't inject markup on this pre-auth page.
+    const row = document.createElement("div"); row.className = "feat"; row.style.marginTop = "8px";
+    const t = document.createElement("div"); t.className = "t";
+    const title = document.createElement("div"); title.textContent = k.comment || k.type;
+    const small = document.createElement("small"); small.textContent = k.type + " · " + k.fingerprint;
+    t.appendChild(title); t.appendChild(small); row.appendChild(t);
+    box.appendChild(row);
+  });
+  note.className = "meta";
+  note.textContent = !s.installed
+    ? "No SSH server is installed here yet — the key is saved and SSH starts once openssh-server is present."
+    : (keys.length ? (keys.length + (keys.length === 1 ? " key installed" : " keys installed") + (s.active ? " · SSH is on" : "")) : "");
+}
+$("ssh-add").onclick = async () => {
+  const key = $("ssh-key").value.trim();
+  if (!key) { $("ssh-note").className = "meta warn"; $("ssh-note").textContent = "paste a public key"; return; }
+  try { renderSSHSetup(await api("POST", "/api/ssh-keys", { key })); $("ssh-key").value = ""; $("ssh-note").className = "meta ok"; $("ssh-note").textContent = "key installed — you can now SSH in as root"; }
+  catch (e) { $("ssh-note").className = "meta warn"; $("ssh-note").textContent = e.message; }
+};
+
 // ---- time zone ----
 // tzNote writes via textContent (never innerHTML) so a server- or geolocation-
 // supplied zone string can't inject markup on this pre-auth page.
@@ -280,6 +321,7 @@ $("tz-save").onclick = async () => {
 load("");
 loadSecurity();
 loadTimezone();
+loadSSHSetup();
 </script>
 </body>
 </html>
