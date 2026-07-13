@@ -63,6 +63,26 @@ if ! command -v tailscale >/dev/null 2>&1; then
   curl -fsSL https://tailscale.com/install.sh | sh \
     || echo "   WARN: tailscale install failed — the tailnet option stays unavailable until installed"
 fi
+
+# --- comitup (headless Wi-Fi onboarding, opt-in via -comitup) ----------------
+# Recovery AP for a node that boots with NO network: comitup raises a Wi-Fi AP +
+# captive portal so the operator can join the node to a Wi-Fi network without a
+# screen or keyboard. Not in the base repos — add davesteele's apt source (a .deb
+# that drops the repo + signing key), then install comitup. Best-effort + ISOLATED
+# in a subshell: a failure here (offline builder, repo down) must NEVER fail the
+# core image. comitup drives NetworkManager (already installed) and stays dormant
+# while the node has a connection, only raising the AP when it is disconnected.
+if ! command -v comitup >/dev/null 2>&1; then
+  ( set -e
+    deb=/tmp/davesteele-comitup-apt-source.deb
+    curl -fsSL -o "$deb" https://davesteele.github.io/comitup/latest/davesteele-comitup-apt-source_latest.deb
+    apt-get install -y "$deb"
+    apt-get update
+    apt-get install -y --no-install-recommends comitup
+    rm -f "$deb"
+  ) && echo ">> comitup installed (headless recovery AP)" \
+    || echo "   WARN: comitup install failed — the -comitup recovery AP stays unavailable"
+fi
 # display=kms modes run as root; clear root's stale GStreamer registry so the
 # freshly-installed plugins (kmssink) are found on first use.
 rm -rf /root/.cache/gstreamer-1.0 2>/dev/null || true
@@ -104,13 +124,13 @@ fi
 # separate first-boot service). -auto-hostname renames a stock-default hostname.
 SEATUID="$(id -u "$SEATUSER" 2>/dev/null || echo 1000)"
 if [ "$COMPOSITOR" = wayland ]; then
-  EXECFLAGS="-addr :80 -seat-user $SEATUSER -auth-key-file /etc/sideshow/agent.key -init-auth-key -start-mode wayland -wayland-launcher /home/$SEATUSER/run-wayland.sh -auto-hostname"
+  EXECFLAGS="-addr :80 -seat-user $SEATUSER -auth-key-file /etc/sideshow/agent.key -init-auth-key -start-mode wayland -wayland-launcher /home/$SEATUSER/run-wayland.sh -auto-hostname -comitup"
   AFTER="network-online.target seatd.service systemd-user-sessions.service"
   # labwc-as-seat-user needs the seat user's XDG_RUNTIME_DIR (/run/user/$SEATUID),
   # created by logind for the lingering user — wait so a cold boot can't race it.
   PRE="ExecStartPre=/bin/sh -c 'i=0; while [ ! -d /run/user/$SEATUID ] && [ \$i -lt 30 ]; do i=\$((i+1)); sleep 1; done'"
 else
-  EXECFLAGS="-addr :80 -seat-user $SEATUSER -auth-key-file /etc/sideshow/agent.key -init-auth-key -start-x -auto-hostname"
+  EXECFLAGS="-addr :80 -seat-user $SEATUSER -auth-key-file /etc/sideshow/agent.key -init-auth-key -start-x -auto-hostname -comitup"
   AFTER="network-online.target systemd-user-sessions.service"
   PRE=""
 fi
