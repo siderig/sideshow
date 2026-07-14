@@ -74,6 +74,7 @@ func NewServer(cfg *Config, sup *Supervisor, stats *Stats, apt *Apt, cec *CEC, v
 	s.mux.HandleFunc("/api/timezone/detect", s.handleTimezoneDetect)
 	s.mux.HandleFunc("/api/ssh-keys", s.handleSSHKeys)
 	s.mux.HandleFunc("/api/ssh-keys/delete", s.handleSSHKeyDelete)
+	s.mux.HandleFunc("/api/authkey", s.handleAuthKey)
 	s.mux.HandleFunc("/api/wifi", s.handleWifi)
 	s.mux.HandleFunc("/api/wifi/delete", s.handleWifiForget)
 	s.mux.HandleFunc("/api/tailscale", s.handleTailscale)
@@ -183,6 +184,23 @@ func (s *Server) setupExempt(r *http.Request) bool {
 		// under the "LAN is trusted during onboarding" model; the wizard warns. Key
 		// REMOVAL (/api/ssh-keys/delete) is a different path and stays gated.
 		return r.Method == http.MethodGet || r.Method == http.MethodPost
+	case "/api/wifi":
+		// GET (scan) + POST (join) so the wizard can connect a headless node to
+		// Wi-Fi before it has a key — the whole point of onboarding over comitup's
+		// recovery AP. Same LAN-trust-during-setup tradeoff as ssh-keys (a client on
+		// the setup LAN could join the node to a network); forget (/api/wifi/delete)
+		// stays gated.
+		return r.Method == http.MethodGet || r.Method == http.MethodPost
+	case "/api/hostname":
+		// GET (identity) + POST (rename) so the operator can name the node in the
+		// wizard. Low-risk: SetHostname validates and refuses the load-bearing names.
+		return r.Method == http.MethodGet || r.Method == http.MethodPost
+	case "/api/authkey":
+		// POST sets the control key during onboarding, so the operator picks one they
+		// know instead of the invisible minted key. Pre-auth ONLY here (!Complete);
+		// afterward it needs the current key. Not more exposed than the key already
+		// is via /api/setup during this same window.
+		return r.Method == http.MethodPost
 	}
 	// NOTE: the Tailscale/TLS endpoints are deliberately NOT exempt. Joining a
 	// tailnet or toggling TLS is security-sensitive and must always require the
@@ -1015,7 +1033,19 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, &apiError{code: 405, err: fmt.Errorf("use GET")})
 		return
 	}
-	writeJSON(w, 200, s.setup.Info(r.URL.Query().Get("compositor")))
+	si := s.setup.Info(r.URL.Query().Get("compositor"))
+	// Augment with identity + reachability + the current control key so the wizard
+	// can show a REAL url (not the kiosk's 127.0.0.1), name the node, and surface
+	// the self-minted key. The key ride-along is safe: /api/setup is served
+	// unauthenticated only while !SetupComplete (setupExempt); afterward it is gated.
+	ni := s.net.Info()
+	si.Hostname = ni.Hostname
+	si.Suggested = ni.Suggested
+	si.IP = ni.Link.IP
+	si.CanRename = ni.CanRename
+	si.Protected = ni.Protected
+	si.AuthKey = s.cfg.AuthKeyValue()
+	writeJSON(w, 200, si)
 }
 
 // handleSetupInstall starts a background apt install of the selected feature

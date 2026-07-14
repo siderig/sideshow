@@ -197,14 +197,28 @@ empty/missing → no auth, the LAN-only default), the whole surface is gated: ev
 is sniffable on the wire; it stops casual access + accidental control on a trusted LAN. **When auth
 is on, VNC also allows input control** (otherwise the live view is forced view-only).
 
+**Rotating the control key:** `POST /api/authkey {"key":"…"}` replaces the node's control key (8–128
+printable, non-space ASCII), writes the key file, and applies it **live** — the next request must
+carry the new key (no restart). Reachable pre-auth during first-run setup so the operator can pick a
+key they know instead of the invisible self-minted one; gated by the current key afterward. The
+current key value is surfaced (for the wizard to display) only on `GET /api/setup`, which is itself
+pre-auth only while `!SetupComplete`.
+
 **Exempt from the key:**
 - `GET /` (the login/UI shell — no secrets), `POST /api/auth` (the login endpoint),
   `GET /api/health` (liveness for an external monitor), and `/favicon.ico`.
-- **The first-run setup surface** — `GET /setup`, `GET /api/setup`, `POST /api/setup/install`,
-  `POST /api/setup/finish` — but **only while the node is not yet provisioned** (`!SetupComplete`).
+- **The first-run setup surface** — `GET /setup` and the onboarding endpoints `GET /api/setup`,
+  `POST /api/setup/install`, `POST /api/setup/finish`, plus — so a fresh **headless** node can
+  actually be brought up — `GET|POST /api/ssh-keys`, `GET|POST /api/wifi`, `GET|POST /api/hostname`,
+  and `POST /api/authkey` — but **only while the node is not yet provisioned** (`!SetupComplete`).
   This is the bootstrap window on a fresh node: no key has been entered yet and the LAN is the trust
-  boundary (same model as the plain-HTTP auth). Once the wizard finishes, `SetupComplete` flips and
-  this surface is gated like everything else, closing the pre-auth hole.
+  boundary (same model as the plain-HTTP auth). Installing an SSH key, joining Wi-Fi, or setting the
+  control key here is a **deliberate LAN-trust-during-onboarding** tradeoff (a client on the setup LAN
+  could plant a key or join the node to a network); the wizard warns. Once the wizard finishes,
+  `SetupComplete` flips and this whole surface is gated like everything else, closing the pre-auth
+  hole. (Removal paths — `…/ssh-keys/delete`, `/api/wifi/delete` — stay gated throughout. The
+  Tailscale/TLS endpoints are also never exempt: enrolling a node into a tailnet must always need the
+  key.)
 - **Loopback-only kiosk fetches** — the locally-running CDP-driven kiosk has no auth cookie, so a
   handful of viewer surfaces are exempt **only for a loopback client** (never widening LAN access):
   `/docfs/…`, `GET`/`HEAD /media/…`, `GET /show`, and `GET /api/playlist-media`.
@@ -849,11 +863,19 @@ everything else.
     "tools": { "chromium": true, "labwc": false, … },   // which binaries are present
     "features": [ { "key": "base", "label": "…", "packages": ["chromium", …], "compositor": "x11",
                     "installed": true, "required": true } ],
-    "installing": false, "last_result": "", "log_tail": ""
+    "installing": false, "last_result": "", "log_tail": "",
+    // identity + reachability + the control key, so the wizard can show a REAL url (not the
+    // kiosk's own 127.0.0.1), name the node, and surface the self-minted key:
+    "hostname": "sideshow-ab12", "suggested": "sideshow-ab12", "ip": "192.168.1.50",
+    "can_rename": true, "protected": false,
+    "auth_key": "…"                         // the CURRENT control key — only ever sent here, and this
+                                            // endpoint is pre-auth only while !complete
   }
   ```
   `?compositor=` overrides the recommended compositor so the feature list reflects the operator's
-  pick; without it the arch heuristic decides.
+  pick; without it the arch heuristic decides. The wizard drives node naming, Wi-Fi, and the control
+  key through the standard `/api/hostname`, `/api/wifi`, and `/api/authkey` endpoints (all pre-auth
+  during setup — see the exemptions above).
 - `POST /api/setup/install {"compositor":"x11|wayland","features":["airplay",…]}` — starts a
   background `apt-get install` of the deduped union of the selected features' packages (the required
   `base` is always included), under `nice`+`ionice`. Returns `{ "ok": true, "installing": [pkgs…] }`.

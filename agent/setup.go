@@ -60,6 +60,18 @@ type SetupInfo struct {
 	Installing   bool            `json:"installing"`
 	LastResult   string          `json:"last_result,omitempty"`
 	LogTail      string          `json:"log_tail,omitempty"`
+
+	// Identity + reachability, filled by the handler (not Info) so the wizard can
+	// show a REACHABLE url (not the kiosk's own 127.0.0.1) and name the node.
+	Hostname  string `json:"hostname,omitempty"`
+	Suggested string `json:"suggested,omitempty"`  // sideshow-<serial4> default name
+	IP        string `json:"ip,omitempty"`         // primary LAN IPv4
+	CanRename bool   `json:"can_rename"`            // hostnamectl present
+	Protected bool   `json:"protected"`             // load-bearing name → rename refused
+	// AuthKey is the CURRENT control key value. Sent ONLY on /api/setup, which is
+	// reachable unauthenticated only while !Complete (setupExempt) — so the wizard
+	// can show the self-minted key; once setup finishes the endpoint is gated.
+	AuthKey string `json:"auth_key,omitempty"`
 }
 
 func NewSetup(cfg *Config, state *State) *Setup {
@@ -170,7 +182,7 @@ func (s *Setup) Info(compositor string) SetupInfo {
 		SeatUser:     s.cfg.SeatUser,
 		SeatExists:   userExists(s.cfg.SeatUser),
 		AptAvailable: aptErr == nil,
-		AuthEnabled:  s.cfg.AuthKey != "",
+		AuthEnabled:  s.cfg.AuthKeyValue() != "",
 		Tools:        tools,
 		Features:     s.featureCatalog(compositor),
 		Installing:   installing,

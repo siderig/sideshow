@@ -72,6 +72,41 @@
   </div>
 
   <div class="panel">
+    <h2>Name this node</h2>
+    <p class="meta" style="margin:0 0 10px">A short hostname — letters, digits, hyphens. Also how you'll reach it: <span class="mono" id="name-dothint">http://&lt;name&gt;.local/</span></p>
+    <div class="row" style="margin-top:0">
+      <input type="text" id="name-input" placeholder="e.g. lobby-screen" autocomplete="off" spellcheck="false" style="flex:1;min-width:200px;background:var(--tile);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:9px 12px">
+      <button class="primary" id="name-save">Set name</button>
+    </div>
+    <p class="meta" id="name-note" style="margin-top:8px"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Wi-Fi</h2>
+    <p class="meta" style="margin:0 0 10px">Connect this node to a wireless network — skip it if you're on ethernet. <span id="wifi-active"></span></p>
+    <div class="row" style="margin-top:0">
+      <select id="wifi-ssid" style="flex:1;min-width:200px;background:var(--tile);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:9px 12px"><option value="">Scanning…</option></select>
+      <button id="wifi-rescan" title="Rescan networks">Rescan</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input type="password" id="wifi-psk" placeholder="password (blank for an open network)" style="flex:1;min-width:200px;background:var(--tile);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:9px 12px">
+      <button class="primary" id="wifi-join">Join</button>
+    </div>
+    <p class="meta" id="wifi-note" style="margin-top:8px"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Control key</h2>
+    <p class="meta" style="margin:0 0 10px">The key that unlocks this node's panel. It was generated automatically — copy it, or set your own below. <b>Anyone with this key can control the node.</b></p>
+    <div class="kv"><span>current key</span><span class="mono" id="key-current" style="word-break:break-all;user-select:all">…</span></div>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="key-new" placeholder="set your own (8–128 chars, no spaces)" autocomplete="off" spellcheck="false" style="flex:1;min-width:200px;background:var(--tile);border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:9px 12px">
+      <button class="primary" id="key-save">Set key</button>
+    </div>
+    <p class="meta" id="key-note" style="margin-top:8px"></p>
+  </div>
+
+  <div class="panel">
     <h2>Compositor</h2>
     <div class="seg" id="comp"><button data-c="x11">X11 · matchbox</button><button data-c="wayland">Wayland · labwc</button></div>
     <p class="meta" id="comp-note" style="margin:10px 0 0"></p>
@@ -155,8 +190,28 @@ function renderDetect(d) {
   $("d-ram").textContent = d.ram_mb ? (d.ram_mb + " MB") : "?";
   $("d-seat").textContent = (d.seat_user || "?") + (d.seat_user_exists ? " ✓" : " (will be created)");
   $("d-apt").textContent = d.apt_available ? "available" : "not found";
-  $("d-auth").innerHTML = d.auth_enabled ? '<span class="ok">key set</span>' : '<span class="warn">open (no key) — set one after setup</span>';
-  $("setup-url").textContent = window.location.origin + "/setup";
+  $("d-auth").innerHTML = d.auth_enabled ? '<span class="ok">key set — see “Control key” below</span>' : '<span class="warn">open (no key) — set one below</span>';
+  // Reachable URL: the kiosk's own origin is 127.0.0.1 (useless typed on a phone) —
+  // prefer the node's LAN IP, then <hostname>.local; fall back to the page origin,
+  // which is already correct when this page is opened from another device.
+  const onLoopback = /^(127\.|localhost$|\[?::1\]?$)/.test(location.hostname);
+  const lanHost = d.ip || (d.hostname ? d.hostname + ".local" : "");
+  $("setup-url").textContent = ((onLoopback && lanHost) ? ("http://" + lanHost) : location.origin) + "/setup";
+}
+
+// renderName fills the "Name this node" panel from setup/hostname info.
+function renderName(d) {
+  if (d.hostname) $("name-dothint").textContent = "http://" + d.hostname + ".local/";
+  const inp = $("name-input"), btn = $("name-save"), note = $("name-note");
+  if (document.activeElement !== inp && !inp.value) inp.value = d.hostname || d.suggested || "";
+  if (d.protected) { inp.disabled = btn.disabled = true; note.className = "meta"; note.textContent = "This name is load-bearing (deploy convention) and can't be changed here."; }
+  else if (d.can_rename === false) { inp.disabled = btn.disabled = true; note.className = "meta"; note.textContent = "hostnamectl isn't available on this node."; }
+}
+
+// renderKey shows the current control key (the wizard is the one place it is
+// surfaced — served pre-auth only during setup).
+function renderKey(d) {
+  $("key-current").textContent = d.auth_key ? d.auth_key : "(none — the panel is open, no key)";
 }
 
 function renderFeatures(d) {
@@ -189,6 +244,8 @@ async function load(compositor) {
     ? "Wayland (labwc) — GPU-accelerated; best on a capable x86 GPU."
     : "X11 (matchbox) — software-friendly; best on a Raspberry Pi / weak GPU.";
   renderDetect(info);
+  renderName(info);
+  renderKey(info);
   renderFeatures(info);
   reflectInstalling(info);
 }
@@ -318,10 +375,65 @@ $("tz-save").onclick = async () => {
   catch (e) { tzNote(e.message, "warn"); }
 };
 
+// ---- name this node ----
+$("name-save").onclick = async () => {
+  const hostname = $("name-input").value.trim();
+  if (!hostname) { $("name-note").className = "meta warn"; $("name-note").textContent = "enter a name"; return; }
+  $("name-save").disabled = true;
+  try { const r = await api("POST", "/api/hostname", { hostname }); $("name-note").className = "meta ok"; $("name-note").textContent = "named " + r.hostname + " · reachable at http://" + r.hostname + ".local/"; renderName(r); }
+  catch (e) { $("name-note").className = "meta warn"; $("name-note").textContent = e.message; }
+  finally { $("name-save").disabled = false; }
+};
+
+// ---- Wi-Fi (scan + join; pre-auth during setup) ----
+async function loadWifi() {
+  const sel = $("wifi-ssid"), note = $("wifi-note");
+  try {
+    const d = await api("GET", "/api/wifi");
+    if (!d.supported) {
+      sel.innerHTML = '<option value="">no Wi-Fi device</option>';
+      ["wifi-ssid", "wifi-psk", "wifi-join", "wifi-rescan"].forEach(id => $(id).disabled = true);
+      note.className = "meta"; note.textContent = d.note || "This node has no wireless device — use ethernet.";
+      return;
+    }
+    $("wifi-active").textContent = d.active ? ("Connected to " + d.active + ".") : "";
+    const nets = (d.networks || []).filter(n => n.ssid);
+    sel.innerHTML = "";
+    if (!nets.length) { sel.innerHTML = '<option value="">no networks found — Rescan</option>'; return; }
+    nets.forEach(n => {
+      // textContent / value only — an SSID is attacker-controllable (a nearby AP); never inject it as markup.
+      const o = document.createElement("option");
+      o.value = n.ssid;
+      o.textContent = n.ssid + (n.security ? " · " + n.security : " · open") + (n.active ? " ✓" : "");
+      sel.appendChild(o);
+    });
+  } catch (e) { note.className = "meta warn"; note.textContent = e.message; }
+}
+$("wifi-rescan").onclick = async () => { $("wifi-note").className = "meta"; $("wifi-note").textContent = "scanning…"; await loadWifi(); if ($("wifi-note").textContent === "scanning…") $("wifi-note").textContent = ""; };
+$("wifi-join").onclick = async () => {
+  const ssid = $("wifi-ssid").value, psk = $("wifi-psk").value;
+  if (!ssid) { $("wifi-note").className = "meta warn"; $("wifi-note").textContent = "pick a network"; return; }
+  $("wifi-join").disabled = true; $("wifi-note").className = "meta"; $("wifi-note").textContent = "joining " + ssid + "… (can take a moment)";
+  try { await api("POST", "/api/wifi", { ssid, psk }); $("wifi-psk").value = ""; $("wifi-note").className = "meta ok"; $("wifi-note").textContent = "joined / saved " + ssid; loadWifi(); }
+  catch (e) { $("wifi-note").className = "meta warn"; $("wifi-note").textContent = e.message; }
+  finally { $("wifi-join").disabled = false; }
+};
+
+// ---- control key (show + set your own) ----
+$("key-save").onclick = async () => {
+  const key = $("key-new").value.trim();
+  if (!key) { $("key-note").className = "meta warn"; $("key-note").textContent = "enter a key (8–128 chars)"; return; }
+  $("key-save").disabled = true;
+  try { await api("POST", "/api/authkey", { key }); $("key-current").textContent = key; $("key-new").value = ""; $("key-note").className = "meta ok"; $("key-note").textContent = "control key updated — use this to unlock the panel"; }
+  catch (e) { $("key-note").className = "meta warn"; $("key-note").textContent = e.message; }
+  finally { $("key-save").disabled = false; }
+};
+
 load("");
 loadSecurity();
 loadTimezone();
 loadSSHSetup();
+loadWifi();
 </script>
 </body>
 </html>
