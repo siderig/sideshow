@@ -186,4 +186,14 @@ command -v systemctl >/dev/null 2>&1 && systemctl enable avahi-daemon.service 2>
 # unattended-upgrades runs off the apt-daily timers (staggered by a randomized delay).
 systemctl enable apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 
+# --- shrink: drop what the install left behind ------------------------------
+# The downloaded .deb archives and the apt package lists (hundreds of MB after a
+# full desktop/kiosk install) are not needed at runtime — apt refetches lists on
+# the next `update`. Removing them BEFORE the image is zero-filled + xz-compressed
+# is the single biggest cut to the flashed .img size. Also clear the root user's
+# caches populated during the build.
+apt-get clean
+rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /tmp/* /root/.cache 2>/dev/null || true
+echo ">> [provision] cleaned apt caches to shrink the image"
+
 echo ">> [provision] done"
