@@ -91,7 +91,7 @@ func (v *VNC) Status() VNCStatus {
 		Clients:      v.clients,
 		Pinned:       v.pinned,
 		Port:         v.cfg.VNCPort,
-		Controllable: v.cfg.AuthKey != "", // input only when the surface is key-protected
+		Controllable: v.cfg.AuthKeyValue() != "", // input only when the surface is key-protected
 		Scale:        v.cfg.VNCScale,
 		MaxFPS:       v.cfg.VNCMaxFPS,
 		Nice:         v.cfg.VNCNice,
@@ -270,7 +270,7 @@ func (v *VNC) buildServerCmd() (*exec.Cmd, error) {
 			return nil, fmt.Errorf("no wayland socket in %s (is labwc running?)", v.cfg.RuntimeDir)
 		}
 		bin = "wayvnc"
-		if v.cfg.AuthKey == "" {
+		if v.cfg.AuthKeyValue() == "" {
 			args = append(args, "--disable-input") // view-only on an open LAN (also needs no virtual-input protocol)
 		}
 		if v.cfg.VNCMaxFPS > 0 {
@@ -310,7 +310,7 @@ func (v *VNC) buildServerCmd() (*exec.Cmd, error) {
 		}
 		// Allow keyboard/mouse ONLY when the control surface is key-protected;
 		// otherwise force view-only so an open LAN can't drive the kiosk.
-		if v.cfg.AuthKey == "" {
+		if v.cfg.AuthKeyValue() == "" {
 			args = append(args, "-viewonly")
 		}
 		env = []string{

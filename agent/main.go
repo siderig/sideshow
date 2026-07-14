@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -94,7 +95,8 @@ type Config struct {
 	DocsDir         string // directory the document feature may serve local files from (no path escapes)
 	MediaDir        string // uploadable media library dir (images/videos/audio/docs), served at /media
 	AuthKeyFile     string // file holding the UI/API auth key (empty/missing → no auth)
-	AuthKey         string // resolved auth key (from -auth-key or the key file)
+	AuthKey         string // boot-time seed for the auth key (from -auth-key or the key file); live value is liveKey
+	liveKey         atomic.Pointer[string] // the LIVE UI/API key — seeded from AuthKey, rotatable at runtime (setup wizard / Settings). Read on every request's auth check, so it is atomic; read via AuthKeyValue(), rotated via SetAuthKey().
 	InitAuthKey     bool   // first-run provisioning: mint a random key at -auth-key-file if it is missing/empty
 	AuthorizedKeysFile string // SSH authorized_keys the UI installs keys into (default root's)
 	AllowShutdown   bool   // allow POST /api/shutdown (poweroff) — off for unattended nodes
@@ -465,7 +467,24 @@ func (c *Config) resolve() error {
 		groups := supplementaryGroups(u)
 		c.cred = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: groups}
 	}
+	c.SetAuthKey(c.AuthKey) // seed the live key from the resolved boot value
 	return nil
+}
+
+// AuthKeyValue returns the live UI/API key ("" = auth disabled). Read on every
+// request's auth check, so it goes through the atomic (never the AuthKey field,
+// which is only the boot-time seed and never updated on a rotation).
+func (c *Config) AuthKeyValue() string {
+	if p := c.liveKey.Load(); p != nil {
+		return *p
+	}
+	return c.AuthKey // not seeded yet (a test Config, or before resolve()) → the field
+}
+
+// SetAuthKey rotates the live key (setup wizard / Settings). The caller persists
+// it to the key file; this makes it take effect immediately, without a restart.
+func (c *Config) SetAuthKey(k string) {
+	c.liveKey.Store(&k)
 }
 
 // ensureAuthKeyFile mints a unique random key at path if it is missing or empty
@@ -488,6 +507,25 @@ func ensureAuthKeyFile(path string) error {
 	_ = os.Chmod(path, 0o600) // enforce 0600 regardless of umask
 	log.Printf("[auth] minted a per-node key at %s", path)
 	return nil
+}
+
+// writeAuthKeyFile atomically replaces the key file with key (dir 0700, file
+// 0600). Used by the runtime key-rotation endpoint; caller applies it live via
+// Config.SetAuthKey. A temp-then-rename keeps a concurrent reader from ever
+// seeing a half-written key.
+func writeAuthKeyFile(path, key string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(key+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil { // enforce 0600 regardless of umask
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // supplementaryGroups returns the seat user's group ids (so Chromium keeps
