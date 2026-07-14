@@ -65,23 +65,16 @@ if ! command -v tailscale >/dev/null 2>&1; then
 fi
 
 # --- comitup (headless Wi-Fi onboarding, opt-in via -comitup) ----------------
-# Recovery AP for a node that boots with NO network: comitup raises a Wi-Fi AP +
-# captive portal so the operator can join the node to a Wi-Fi network without a
-# screen or keyboard. Not in the base repos — add davesteele's apt source (a .deb
-# that drops the repo + signing key), then install comitup. Best-effort + ISOLATED
-# in a subshell: a failure here (offline builder, repo down) must NEVER fail the
-# core image. comitup drives NetworkManager (already installed) and stays dormant
-# while the node has a connection, only raising the AP when it is disconnected.
+# Recovery AP for a node that boots with NO network: comitup raises a Wi-Fi AP so
+# the operator can join it to a network without a screen or keyboard. It is in the
+# base repos (Debian / Raspberry Pi OS trixie main), so a plain apt install
+# suffices. Best-effort — a failure (e.g. an older suite that lacks it) must never
+# fail the core image; the -comitup flag then simply stays a no-op. comitup drives
+# NetworkManager (already installed) and stays dormant while the node is connected.
 if ! command -v comitup >/dev/null 2>&1; then
-  ( set -e
-    deb=/tmp/davesteele-comitup-apt-source.deb
-    curl -fsSL -o "$deb" https://davesteele.github.io/comitup/latest/davesteele-comitup-apt-source_latest.deb
-    apt-get install -y "$deb"
-    apt-get update
-    apt-get install -y --no-install-recommends comitup
-    rm -f "$deb"
-  ) && echo ">> comitup installed (headless recovery AP)" \
-    || echo "   WARN: comitup install failed — the -comitup recovery AP stays unavailable"
+  apt-get install -y --no-install-recommends comitup \
+    && echo ">> comitup installed (headless recovery AP)" \
+    || echo "   WARN: comitup unavailable in this suite — the -comitup recovery AP stays off"
 fi
 # display=kms modes run as root; clear root's stale GStreamer registry so the
 # freshly-installed plugins (kmssink) are found on first use.

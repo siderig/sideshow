@@ -13,7 +13,7 @@
 # out on the first CI run (bootloader/partition specifics vary). The Raspberry Pi
 # image path is the well-trodden one.
 architecture: amd64
-{{ $suite := or .suite "bookworm" }}
+{{ $suite := or .suite "trixie" }}
 {{ $image := or .image "sideshow-debian-amd64.img" }}
 actions:
   - action: debootstrap
