@@ -476,6 +476,15 @@
         <p class="meta" id="ssh-note" style="margin-top:8px"></p>
       </div>
     </details>
+    <details class="sect" id="key-sect">
+      <summary><span class="ic" data-ic="key"></span> Control key</summary>
+      <div class="body">
+        <p class="meta" style="margin-top:12px">The key that unlocks this panel and the API. Changing it takes effect immediately, with no restart — every other browser and device will need the new key to reconnect. This session re-authenticates itself automatically.</p>
+        <label style="margin-top:12px">New control key <span class="meta">— 8–128 characters, no spaces</span></label>
+        <div class="row"><input type="password" id="key-new" placeholder="new access key" autocomplete="new-password" style="flex:1;min-width:200px"><button class="primary" id="key-save">Change key</button></div>
+        <p class="meta" id="key-note" style="margin-top:8px"></p>
+      </div>
+    </details>
     <details class="sect" id="sec-sect">
       <summary><span class="ic" data-ic="lock"></span> Security &amp; encryption <span class="tag" id="sec-tag"></span></summary>
       <div class="body">
@@ -641,6 +650,7 @@ const ICONS = {
   id: '<rect x="2" y="4" width="20" height="16" rx="2"></rect><circle cx="8" cy="12" r="2.5"></circle><line x1="14" y1="10" x2="18" y2="10"></line><line x1="14" y1="14" x2="18" y2="14"></line>',
   database: '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>',
   tool: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>',
+  key: '<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>',
   dot: '<circle cx="12" cy="12" r="4"></circle>'
 };
 function ic(name) { return '<svg class="svic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || ICONS.dot) + "</svg>"; }
@@ -1340,6 +1350,24 @@ async function sshRemove(k) {
 $("ssh-add").onclick = sshAdd;
 $("ssh-key").addEventListener("keydown", (e) => { if (e.key === "Enter") sshAdd(); });
 $("ssh-sect").addEventListener("toggle", (e) => { if (e.target.open && !sshLoaded) { sshLoaded = true; loadSSH(); } });
+
+// ---- Settings: control key (rotate the panel/API key, live — no restart) ----
+async function keySave() {
+  const key = $("key-new").value, note = $("key-note");
+  if (key.length < 8) { note.className = "meta warn"; note.textContent = "Use at least 8 characters."; return; }
+  if (/\s/.test(key)) { note.className = "meta warn"; note.textContent = "The key can't contain spaces."; return; }
+  try {
+    await api("POST", "/api/authkey", { key });
+    // The key is now live, so this session's old cookie no longer authenticates —
+    // re-auth with the new key so the next poll doesn't bounce to the login screen.
+    await fetch("/api/auth", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key }) });
+    $("key-new").value = "";
+    note.className = "meta ok"; note.textContent = "Control key changed — it's now required to unlock the panel.";
+    toast("control key changed");
+  } catch (e) { note.className = "meta warn"; note.textContent = e.message; toast(e.message, true); }
+}
+$("key-save").onclick = keySave;
+$("key-new").addEventListener("keydown", (e) => { if (e.key === "Enter") keySave(); });
 
 // ---- Security: Tailscale overlay + self-signed HTTPS ----
 let tsNoteUntil = 0; // while Date.now() < this, a transient error stays in #ts-note (the poll won't wipe it)
