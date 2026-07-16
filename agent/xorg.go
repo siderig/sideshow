@@ -37,6 +37,7 @@ func NewXServer(cfg *Config) *XServer {
 // blocks until X accepts connections so the first mode can attach. Both processes
 // are then supervised (restart-on-exit) until Stop.
 func (x *XServer) Start() error {
+	writeNoDPMSConf() // disable X's own blank/DPMS timers before Xorg reads its config
 	if err := x.writeAuth(); err != nil {
 		return fmt.Errorf("xauth: %w", err)
 	}
@@ -73,6 +74,41 @@ func (x *XServer) writeAuth() error {
 		_ = os.Chown(x.cfg.XAuthority, int(x.cfg.cred.Uid), int(x.cfg.cred.Gid))
 	}
 	return nil
+}
+
+// nodpmsXorgConf disables the X server's screen-saver blank and DPMS power timers
+// so an idle kiosk never auto-blanks. The agent owns Xorg (-start-x) and manages
+// sleep EXPLICITLY via `xrandr --off` (see setOutput); but a modern Xorg — e.g.
+// Debian trixie's modeset driver on the Pi — ships the DPMS extension ENABLED
+// with a ~10-minute default, which would otherwise blank the display with no
+// schedule or command (disp's older Xorg lacks the extension, so this never bit
+// there). Zeroing all four timers is the config-level, tool-free equivalent of
+// `xset s off -dpms` — it needs no x11-xserver-utils on the node and applies the
+// instant Xorg starts. Best-effort: a failure just leaves the default timers.
+const nodpmsXorgConf = "/etc/X11/xorg.conf.d/10-sideshow-nodpms.conf"
+
+// nodpmsConf zeroes all four X power timers — BlankTime (legacy screen-saver) and
+// the three DPMS phases — so none of them ever fire on an idle kiosk.
+const nodpmsConf = `# AGENT-MANAGED (sideshow -start-x): never auto-blank/sleep the kiosk.
+# The agent sleeps the display explicitly via xrandr, so disable X's own screen-
+# saver + DPMS timers — a modern Xorg's default DPMS (~10 min) must not blank an
+# idle screen. Remove this file (and restart Xorg) to restore the X defaults.
+Section "ServerFlags"
+	Option "BlankTime"   "0"
+	Option "StandbyTime" "0"
+	Option "SuspendTime" "0"
+	Option "OffTime"     "0"
+EndSection
+`
+
+func writeNoDPMSConf() {
+	if err := os.MkdirAll("/etc/X11/xorg.conf.d", 0o755); err != nil {
+		log.Printf("[xserver] mkdir xorg.conf.d: %v (DPMS blanking left at X default)", err)
+		return
+	}
+	if err := os.WriteFile(nodpmsXorgConf, []byte(nodpmsConf), 0o644); err != nil {
+		log.Printf("[xserver] write %s: %v (DPMS blanking left at X default)", nodpmsXorgConf, err)
+	}
 }
 
 // buildXorg runs the X server as ROOT on the X VT. Root gets DRM master + input

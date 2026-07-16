@@ -52,3 +52,22 @@ func TestBuildWMArgsUnchanged(t *testing.T) {
 		t.Fatalf("wm argv = %v, want %v", cmd.Args, wantArgs)
 	}
 }
+
+// TestNoDPMSConf guards the kiosk-never-blanks contract: the agent-owned Xorg
+// drop-in must zero every X power timer. A modern Xorg (Debian trixie on the Pi)
+// enables DPMS by default (~10 min); dropping any one of these lines would let an
+// idle kiosk auto-blank with no schedule or command.
+func TestNoDPMSConf(t *testing.T) {
+	if !strings.Contains(nodpmsConf, `Section "ServerFlags"`) {
+		t.Fatalf("nodpmsConf must be a ServerFlags section:\n%s", nodpmsConf)
+	}
+	for _, timer := range []string{"BlankTime", "StandbyTime", "SuspendTime", "OffTime"} {
+		if !strings.Contains(nodpmsConf, `Option "`+timer+`"`) {
+			t.Errorf("nodpmsConf missing %s timer — an idle kiosk could auto-blank", timer)
+		}
+	}
+	// Every timer must be set to 0 (disabled), nothing left nonzero.
+	if n := strings.Count(nodpmsConf, `"0"`); n != 4 {
+		t.Errorf("want 4 zeroed timers, found %d occurrences of \"0\"", n)
+	}
+}
