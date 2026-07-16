@@ -36,7 +36,9 @@ if [ "$COMPOSITOR" = wayland ]; then
   OPTIONAL="mpv scrot uxplay gstreamer1.0-plugins-bad avahi-daemon wayvnc grim \
     xdg-desktop-portal xdg-desktop-portal-wlr gsettings-desktop-schemas adwaita-icon-theme"
 else
-  CORE="$CORE xserver-xorg xinit xauth matchbox-window-manager"
+  # x11-xserver-utils = xrandr + xset: the agent drives rotate/zoom/sleep/wake via
+  # xrandr, so without it those controls are dead (the Wayland path uses wlr-randr).
+  CORE="$CORE xserver-xorg xinit xauth matchbox-window-manager x11-xserver-utils"
   OPTIONAL="mpv scrot uxplay gstreamer1.0-plugins-bad avahi-daemon x11vnc unclutter-xfixes \
     xdg-desktop-portal xdg-desktop-portal-gtk gsettings-desktop-schemas xsettingsd adwaita-icon-theme"
 fi
