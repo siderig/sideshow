@@ -203,6 +203,17 @@ func main() {
 	flag.BoolVar(&cfg.WatchdogReboot, "watchdog-reboot", false, "let the watchdog reboot the node when the mode stays down (failed) for several minutes")
 	flag.Parse()
 
+	// On a low-RAM node (a Pi 3B-class ~1 GB board) default the kiosk Chromium to
+	// its low-memory profile: without it a heavy page thrashes swap until the
+	// renderer OOM-crashes ("Aw, Snap"). An explicit -chromium-low-mem (either way)
+	// always wins — this only fills in the default the image/flags left unset.
+	if !flagSet("chromium-low-mem") {
+		if mb := totalRAMMB(); mb > 0 && mb < autoLowMemThresholdMB {
+			cfg.ChromiumLowMem = true
+			log.Printf("[chromium] low-memory profile auto-enabled (%d MB RAM < %d MB threshold; override with -chromium-low-mem=false)", mb, autoLowMemThresholdMB)
+		}
+	}
+
 	if err := cfg.resolve(); err != nil {
 		log.Fatalf("config: %v", err)
 	}
@@ -717,6 +728,18 @@ func (s *Supervisor) buildCmd(m Mode) (*exec.Cmd, *os.File, error) {
 		return nil, nil, err
 	}
 
+	// Renaming a node strands Chromium's profile SingletonLock: the lock symlink
+	// encodes "<hostname>-<pid>", so once the node's name changes (e.g. the
+	// -auto-hostname "sideshow-xxxx" seed → an operator-chosen name) the recorded
+	// hostname no longer matches and Chromium refuses to start ("profile appears
+	// to be in use ... on another computer"), looping forever on exit 21. The X11
+	// Chromium kiosk (name == cfg.Chromium) is the sole user of this profile and
+	// the supervisor is its only owner, so clearing the stale markers before each
+	// (re)launch is safe and lets a renamed node's web mode self-heal.
+	if name == cfg.Chromium && cfg.ProfileDir != "" {
+		clearChromiumSingleton(cfg.ProfileDir)
+	}
+
 	cmd := exec.Command(name, args...)
 	cmd.Dir = cfg.Home
 	cmd.Env = s.childEnv(m)
@@ -754,6 +777,23 @@ func (s *Supervisor) buildCmd(m Mode) (*exec.Cmd, *os.File, error) {
 		cmd.SysProcAttr.Setpgid = true
 	}
 	return cmd, tty, nil
+}
+
+// clearChromiumSingleton removes Chromium's profile singleton markers
+// (SingletonLock / SingletonSocket / SingletonCookie) from the user-data-dir
+// before a launch. SingletonLock is a symlink whose target is "<hostname>-<pid>";
+// Chromium refuses to start when that hostname differs from the current one (it
+// assumes another machine holds the profile), so renaming a node otherwise wedges
+// the X11 kiosk in a permanent exit-21 restart loop. The supervisor is the
+// profile's sole owner — there is never a second live instance to protect — so
+// clearing the markers before every (re)launch is safe. Best-effort: a missing
+// file is the normal case, any other error is logged and ignored.
+func clearChromiumSingleton(profileDir string) {
+	for _, name := range []string{"SingletonLock", "SingletonSocket", "SingletonCookie"} {
+		if err := os.Remove(filepath.Join(profileDir, name)); err != nil && !os.IsNotExist(err) {
+			log.Printf("[chromium] clear stale %s: %v", name, err)
+		}
+	}
 }
 
 // openModeTTY opens the foreground-mode VT device and, when dropping
@@ -913,6 +953,49 @@ func (s *Supervisor) postStart(m Mode) error {
 		return nil
 	}
 	return s.chrome.Attach(m.str("url"), m.boolOr("dark", true), attachWaitCold)
+}
+
+// autoLowMemThresholdMB: a node with less RAM than this defaults to the low-memory
+// Chromium profile. Matches the deploy script's MEMCAP_THRESHOLD_MB so the cgroup
+// cap and the in-Chromium levers engage on the same class of weak node.
+const autoLowMemThresholdMB = 1536
+
+// flagSet reports whether the named flag was given on the command line (vs left at
+// its default) — lets an explicit -chromium-low-mem override the RAM auto-default.
+func flagSet(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+// totalRAMMB returns the node's total RAM in MB (from /proc/meminfo), or 0 when it
+// can't be read — a non-Linux host (tests) or an unexpected format — in which case
+// callers treat 0 as "unknown" and skip the low-RAM default.
+func totalRAMMB() int {
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	return parseMemTotalMB(string(b))
+}
+
+// parseMemTotalMB pulls the MemTotal (kB) line out of /proc/meminfo content and
+// returns it in MB (0 if absent/unparseable). Split out from totalRAMMB so it is
+// unit-testable without a real /proc.
+func parseMemTotalMB(meminfo string) int {
+	for _, line := range strings.Split(meminfo, "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "MemTotal:" {
+			if kb, err := strconv.Atoi(f[1]); err == nil {
+				return kb / 1024
+			}
+		}
+	}
+	return 0
 }
 
 // chromiumArgs returns the kiosk flag set (curated from disp's working viewer

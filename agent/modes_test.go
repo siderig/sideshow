@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -202,5 +204,52 @@ func TestMediaEquivalent(t *testing.T) {
 	diffMute := mediaMode(map[string]any{"url": "http://ex/a.mp4", "mute": true})
 	if a.equivalent(diffMute) {
 		t.Error("different mute must NOT be equivalent")
+	}
+}
+
+// TestClearChromiumSingleton covers the renamed-node self-heal: a stale
+// SingletonLock (a dangling "<oldhost>-<pid>" symlink) must be removed before a
+// Chromium launch, the call must be idempotent, and a never-created profile dir
+// must not error.
+func TestClearChromiumSingleton(t *testing.T) {
+	dir := t.TempDir()
+	markers := []string{"SingletonLock", "SingletonSocket", "SingletonCookie"}
+	// Seed the stale markers a renamed node leaves behind — SingletonLock as the
+	// dangling "<oldhost>-<pid>" symlink that blocks Chromium from starting.
+	for _, name := range markers {
+		if err := os.Symlink("sideshow-dbc5-1065", filepath.Join(dir, name)); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	clearChromiumSingleton(dir)
+	for _, name := range markers {
+		if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s: want removed, Lstat err = %v", name, err)
+		}
+	}
+	// Idempotent (nothing left to remove) and safe on a dir that never existed.
+	clearChromiumSingleton(dir)
+	clearChromiumSingleton(filepath.Join(dir, "no-such-profile"))
+}
+
+// TestParseMemTotalMB covers the low-RAM auto-default decision: a Pi 3B (~905 MB)
+// must parse below the threshold (so low-mem auto-enables), a multi-GB node must
+// parse above it (so it does not), and malformed/absent input yields 0 ("unknown,
+// skip") rather than a spurious low-mem enable.
+func TestParseMemTotalMB(t *testing.T) {
+	pi3b := "MemTotal:         905324 kB\nMemFree:          131072 kB\nSwapTotal:        926600 kB\n"
+	if got := parseMemTotalMB(pi3b); got != 884 {
+		t.Errorf("Pi 3B MemTotal = %d MB, want 884", got)
+	}
+	if got := parseMemTotalMB(pi3b); !(got > 0 && got < autoLowMemThresholdMB) {
+		t.Errorf("Pi 3B (%d MB) must fall under the %d MB low-mem threshold", got, autoLowMemThresholdMB)
+	}
+	if got := parseMemTotalMB("MemTotal:        8232000 kB\n"); got <= autoLowMemThresholdMB {
+		t.Errorf("8 GB node = %d MB, must exceed the %d MB threshold", got, autoLowMemThresholdMB)
+	}
+	for _, bad := range []string{"", "MemAvailable: 100 kB\n", "MemTotal: notanumber kB", "garbage"} {
+		if got := parseMemTotalMB(bad); got != 0 {
+			t.Errorf("parseMemTotalMB(%q) = %d, want 0", bad, got)
+		}
 	}
 }
