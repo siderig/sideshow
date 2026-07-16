@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -250,6 +251,27 @@ func TestParseMemTotalMB(t *testing.T) {
 	for _, bad := range []string{"", "MemAvailable: 100 kB\n", "MemTotal: notanumber kB", "garbage"} {
 		if got := parseMemTotalMB(bad); got != 0 {
 			t.Errorf("parseMemTotalMB(%q) = %d, want 0", bad, got)
+		}
+	}
+}
+
+// TestSplitCSV covers the -wayland-disable-output parsing: trims spaces, drops
+// empties, and yields nil (not a 1-elem [""]) for empty/comma-only input so the
+// Wayland output-disable loop is a clean no-op when the flag is unset.
+func TestSplitCSV(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"eDP-1", []string{"eDP-1"}},
+		{"eDP-1,HDMI-A-2", []string{"eDP-1", "HDMI-A-2"}},
+		{"  eDP-1 , , HDMI-A-2 ", []string{"eDP-1", "HDMI-A-2"}},
+		{",", nil},
+	}
+	for _, tc := range tests {
+		if got := splitCSV(tc.in); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("splitCSV(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
 }

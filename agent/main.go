@@ -74,10 +74,11 @@ type Config struct {
 	DisableTranslate  bool   // disable the kiosk's Translate UI via managed policy
 	CookieExtension   string // Web Store extension ID to force-install for cookie-dialog dismissal (empty disables)
 
-	WaylandLauncher string // script that runs labwc + Chromium-Wayland
-	WaylandVT       int    // VT the labwc Wayland primary owns (≥8; X stays VT-suspended on XVT)
-	WaylandCDPPort  int    // remote-debugging port of the Wayland Chromium (distinct from X's)
-	WaylandRoot     bool   // legacy: run labwc as root via libseat 'builtin' (software/pixman)
+	WaylandLauncher       string // script that runs labwc + Chromium-Wayland
+	WaylandVT             int    // VT the labwc Wayland primary owns (≥8; X stays VT-suspended on XVT)
+	WaylandCDPPort        int    // remote-debugging port of the Wayland Chromium (distinct from X's)
+	WaylandRoot           bool   // legacy: run labwc as root via libseat 'builtin' (software/pixman)
+	WaylandDisableOutputs string // comma-separated Wayland outputs to force OFF under labwc (wlr-randr --off)
 
 	StartX        bool   // agent starts + owns Xorg + a WM (matchbox) instead of a display manager (lightdm)
 	XServerCmd    string // X server binary launched when -start-x
@@ -88,28 +89,28 @@ type Config struct {
 	LockInput     bool   // kiosk input lockdown: strip the compositor's window-switch/menu/close keybinds (labwc + matchbox) and enforce -novtswitch on X11
 	NoLocalInput  bool   // pure display: make the compositor ignore ALL local keyboard/pointer/touch devices (udev + xorg.conf.d); remote (VNC/panel) input still works
 
-	CogCmd          string // the WPE WebKit browser binary for the framebuffer web mode (web + display=kms)
-	CogVideoMode    string // COG_PLATFORM_DRM_VIDEO_MODE for cog (e.g. "1920x1080"); empty = EDID-preferred
-	CogCtlCmd       string // cogctl: cog's D-Bus control client, for in-place navigate/reload of the cog kiosk
-	StateFile       string // persisted display state (rotation + zoom), survives restarts
-	DocsDir         string // directory the document feature may serve local files from (no path escapes)
-	MediaDir        string // uploadable media library dir (images/videos/audio/docs), served at /media
-	AuthKeyFile     string // file holding the UI/API auth key (empty/missing → no auth)
-	AuthKey         string // boot-time seed for the auth key (from -auth-key or the key file); live value is liveKey
-	liveKey         atomic.Pointer[string] // the LIVE UI/API key — seeded from AuthKey, rotatable at runtime (setup wizard / Settings). Read on every request's auth check, so it is atomic; read via AuthKeyValue(), rotated via SetAuthKey().
-	InitAuthKey     bool   // first-run provisioning: mint a random key at -auth-key-file if it is missing/empty
-	AuthorizedKeysFile string // SSH authorized_keys the UI installs keys into (default root's)
-	AllowShutdown   bool   // allow POST /api/shutdown (poweroff) — off for unattended nodes
-	AllowCustomRoot bool   // allow custom app modes to run as ROOT on the framebuffer (display=kms)
-	NodeLabel       string // human label (e.g. "Lobby screen") for the fleet view
-	NodeGroup       string // group/site for bulk control
-	AutoHostname    bool   // on first boot, rename a stock-default hostname to sideshow-<serial4>
-	Comitup         bool   // start the comitup recovery Wi-Fi AP at boot when there is no network
-	HeartbeatURL    string // POST status here on a timer (the central aggregator); "" = off
-	HeartbeatSec    int    // heartbeat interval (seconds)
-	Watchdog        bool   // run the network/render watchdog
-	WatchdogProbe   string // TCP address the watchdog dials to test connectivity
-	WatchdogReboot  bool   // let the watchdog reboot the node when the mode stays down
+	CogCmd             string                 // the WPE WebKit browser binary for the framebuffer web mode (web + display=kms)
+	CogVideoMode       string                 // COG_PLATFORM_DRM_VIDEO_MODE for cog (e.g. "1920x1080"); empty = EDID-preferred
+	CogCtlCmd          string                 // cogctl: cog's D-Bus control client, for in-place navigate/reload of the cog kiosk
+	StateFile          string                 // persisted display state (rotation + zoom), survives restarts
+	DocsDir            string                 // directory the document feature may serve local files from (no path escapes)
+	MediaDir           string                 // uploadable media library dir (images/videos/audio/docs), served at /media
+	AuthKeyFile        string                 // file holding the UI/API auth key (empty/missing → no auth)
+	AuthKey            string                 // boot-time seed for the auth key (from -auth-key or the key file); live value is liveKey
+	liveKey            atomic.Pointer[string] // the LIVE UI/API key — seeded from AuthKey, rotatable at runtime (setup wizard / Settings). Read on every request's auth check, so it is atomic; read via AuthKeyValue(), rotated via SetAuthKey().
+	InitAuthKey        bool                   // first-run provisioning: mint a random key at -auth-key-file if it is missing/empty
+	AuthorizedKeysFile string                 // SSH authorized_keys the UI installs keys into (default root's)
+	AllowShutdown      bool                   // allow POST /api/shutdown (poweroff) — off for unattended nodes
+	AllowCustomRoot    bool                   // allow custom app modes to run as ROOT on the framebuffer (display=kms)
+	NodeLabel          string                 // human label (e.g. "Lobby screen") for the fleet view
+	NodeGroup          string                 // group/site for bulk control
+	AutoHostname       bool                   // on first boot, rename a stock-default hostname to sideshow-<serial4>
+	Comitup            bool                   // start the comitup recovery Wi-Fi AP at boot when there is no network
+	HeartbeatURL       string                 // POST status here on a timer (the central aggregator); "" = off
+	HeartbeatSec       int                    // heartbeat interval (seconds)
+	Watchdog           bool                   // run the network/render watchdog
+	WatchdogProbe      string                 // TCP address the watchdog dials to test connectivity
+	WatchdogReboot     bool                   // let the watchdog reboot the node when the mode stays down
 
 	HTTPSAddr            string // listen address for the opt-in self-signed HTTPS listener (e.g. ":443")
 	TailscaleAuthKeyFile string // staged pre-auth key consumed + shredded on first boot (flashed images); "" disables
@@ -170,6 +171,7 @@ func main() {
 	flag.IntVar(&cfg.WaylandVT, "wayland-vt", 8, "VT the labwc Wayland primary owns (X stays VT-suspended on -x-vt)")
 	flag.IntVar(&cfg.WaylandCDPPort, "wayland-cdp-port", 9223, "Chromium remote-debugging port under Wayland (distinct from -cdp-port)")
 	flag.BoolVar(&cfg.WaylandRoot, "wayland-root", false, "legacy: run labwc as root via libseat 'builtin' (software/pixman); default runs it as the seat user via seatd (GPU/GLES2, matches RPi OS)")
+	flag.StringVar(&cfg.WaylandDisableOutputs, "wayland-disable-output", "", "comma-separated Wayland output name(s) to force OFF under the labwc kiosk, e.g. an always-off internal panel so the kiosk lands on the external display (eDP-1). Re-applied via wlr-randr on every Wayland-primary start, since labwc re-enables every connected output. X11 nodes use /api/layout instead.")
 	flag.BoolVar(&cfg.StartX, "start-x", false, "the agent starts + owns Xorg + a window manager (matchbox) itself instead of relying on a display manager (lightdm) — for X11 nodes; the X11 modes attach to it")
 	flag.StringVar(&cfg.XServerCmd, "x-server-cmd", "Xorg", "X server binary the agent launches under -start-x")
 	flag.StringVar(&cfg.XServerArgs, "x-server-args", "-seat seat0 -novtswitch", "extra args for the agent-launched X server (display, vt, -auth, -nolisten tcp are added automatically)")
@@ -949,10 +951,52 @@ func (s *Supervisor) childEnv(m Mode) []string {
 // cog renders the launch URL itself, and runtime control is over D-Bus, not an
 // attach (ROADMAP §9).
 func (s *Supervisor) postStart(m Mode) error {
-	if !m.usesChrome() {
-		return nil
+	var attachErr error
+	if m.usesChrome() {
+		attachErr = s.chrome.Attach(m.str("url"), m.boolOr("dark", true), attachWaitCold)
 	}
-	return s.chrome.Attach(m.str("url"), m.boolOr("dark", true), attachWaitCold)
+	// The labwc kiosk re-enables every connected output on each start, so re-apply
+	// the operator's -wayland-disable-output list here — after the kiosk is up (for a
+	// web mode that's post-CDP-attach, so labwc is reachable). This is the Wayland
+	// analogue of the X11 boot-layout restore: per-node config lands the kiosk on the
+	// intended display (e.g. internal panel off → kiosk on the external TV).
+	if m.isWaylandPrimary() {
+		s.applyWaylandDisabledOutputs()
+	}
+	return attachErr
+}
+
+// applyWaylandDisabledOutputs forces the operator-listed outputs (-wayland-disable-output)
+// off under the labwc kiosk via wlr-randr. labwc enables every connected output on
+// each start, so this runs on every Wayland-primary (re)start. Best-effort with a
+// short retry (labwc may still be settling under a non-Chrome app mode); a failure
+// just leaves the default layout, logged.
+func (s *Supervisor) applyWaylandDisabledOutputs() {
+	for _, name := range splitCSV(s.cfg.WaylandDisableOutputs) {
+		var err error
+		for attempt := 0; attempt < 5; attempt++ {
+			if _, err = s.cfg.wlrRandr(6*time.Second, "--output", name, "--off"); err == nil {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+		if err != nil {
+			log.Printf("[wayland] disable output %s: %v", name, err)
+		} else {
+			log.Printf("[wayland] output %s forced off (-wayland-disable-output)", name)
+		}
+	}
+}
+
+// splitCSV splits a comma-separated list, trimming spaces and dropping empties.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // autoLowMemThresholdMB: a node with less RAM than this defaults to the low-memory
