@@ -28,10 +28,12 @@ echo ">> [provision] compositor=$COMPOSITOR seat-user=$SEATUSER"
 # per package (a suite may lack uxplay/wayvnc — the matching mode just 400s).
 # Chromium is installed separately: the package is `chromium` on Debian but
 # `chromium-browser` on Raspberry Pi OS.
-# fonts-noto-color-emoji: Chromium is installed with --no-install-recommends and
-# pulls no color-emoji font, so any page with emoji renders tofu boxes without it.
+# Fonts: Chromium is installed with --no-install-recommends and pulls none, so
+# without these any page with emoji (fonts-noto-color-emoji) or a non-Latin script
+# (fonts-noto-core: Greek/Cyrillic/Arabic/Hebrew/Thai/Devanagari/… — NOT CJK, which
+# is the much larger fonts-noto-cjk) renders tofu boxes.
 CORE="ca-certificates curl openssh-server plymouth plymouth-themes network-manager \
-  cloud-guest-utils e2fsprogs unattended-upgrades fonts-noto-color-emoji \
+  cloud-guest-utils e2fsprogs unattended-upgrades fonts-noto-color-emoji fonts-noto-core \
   gcc make pkg-config libdrm-dev libegl-dev libgles-dev libgbm-dev"
 if [ "$COMPOSITOR" = wayland ]; then
   CORE="$CORE labwc seatd wlr-randr dbus-user-session"
