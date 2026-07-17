@@ -294,6 +294,7 @@ func main() {
 	content.Start()
 	miracast.Start()
 	NewWatchdog(cfg, sup).Start()
+	sup.StartWaylandOutputWatch() // hold -wayland-disable-output outputs off across labwc hotplug re-enables
 	NewHeartbeat(cfg, sup, stats, netmgr).Start()
 	tsmgr.Start()         // background tailnet-status refresher (fork-free snapshot)
 	tlsm.StartIfEnabled() // restore the self-signed HTTPS listener if it was on
@@ -984,6 +985,46 @@ func (s *Supervisor) applyWaylandDisabledOutputs() {
 			log.Printf("[wayland] disable output %s: %v", name, err)
 		} else {
 			log.Printf("[wayland] output %s forced off (-wayland-disable-output)", name)
+		}
+	}
+}
+
+// StartWaylandOutputWatch launches the -wayland-disable-output re-apply loop (no-op
+// unless the flag is set). postStart applies the disable on a KIOSK (re)start, but
+// labwc re-enables every output on a bare hotplug — e.g. an external TV waking from
+// standby — with no kiosk restart, which would otherwise strand the kiosk back on the
+// disabled panel. This holds the listed outputs off across those events.
+func (s *Supervisor) StartWaylandOutputWatch() {
+	if len(splitCSV(s.cfg.WaylandDisableOutputs)) > 0 {
+		go s.watchWaylandDisabledOutputs()
+	}
+}
+
+// watchWaylandDisabledOutputs polls every 10s and re-disables any -wayland-disable-output
+// that labwc has re-enabled. Cheap in the steady state: it only forks wlr-randr --off
+// for an output that is actually enabled again (none, once settled).
+func (s *Supervisor) watchWaylandDisabledOutputs() {
+	names := splitCSV(s.cfg.WaylandDisableOutputs)
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		if !s.OnWaylandPrimary() {
+			continue // labwc isn't the surface (an X11/KMS mode, or down) — nothing to hold
+		}
+		out, err := s.cfg.wlrRandr(6 * time.Second)
+		if err != nil {
+			continue // labwc settling / transient
+		}
+		enabled := enabledWaylandOutputs(out)
+		for _, name := range names {
+			if !enabled[name] {
+				continue // already off — the steady state, no fork
+			}
+			if _, err := s.cfg.wlrRandr(6*time.Second, "--output", name, "--off"); err != nil {
+				log.Printf("[wayland] re-disable output %s: %v", name, err)
+			} else {
+				log.Printf("[wayland] re-disabled output %s (labwc re-enabled it on hotplug)", name)
+			}
 		}
 	}
 }

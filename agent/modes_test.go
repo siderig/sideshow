@@ -275,3 +275,25 @@ func TestSplitCSV(t *testing.T) {
 		}
 	}
 }
+
+// TestEnabledWaylandOutputs parses wlr-randr's per-output enabled state so the
+// hotplug watcher can spot an output labwc re-enabled (e.g. the internal panel that
+// came back after the external TV woke from standby).
+func TestEnabledWaylandOutputs(t *testing.T) {
+	sample := `HDMI-A-1 "Sony SONY TV 0x01010101 (HDMI-A-1)"
+  Make: Sony
+  Enabled: yes
+  Position: 1440,0
+eDP-1 "Apple Computer Inc Color LCD (eDP-1)"
+  Make: Apple Computer Inc
+  Enabled: no
+  Position: 0,0`
+	got := enabledWaylandOutputs(sample)
+	want := map[string]bool{"HDMI-A-1": true, "eDP-1": false}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("enabledWaylandOutputs = %v, want %v", got, want)
+	}
+	if len(enabledWaylandOutputs("")) != 0 {
+		t.Error("empty input must yield an empty map")
+	}
+}

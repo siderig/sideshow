@@ -407,6 +407,28 @@ func parseWlrOutputs(s string) []string {
 	return outs
 }
 
+// enabledWaylandOutputs maps each Wayland output name to whether it is currently
+// enabled, parsed from `wlr-randr` — a column-0 "NAME \"...\"" header followed by an
+// indented "Enabled: yes|no". Lets the watcher spot an output labwc re-enabled on a
+// hotplug (an external TV waking from standby) so it can force it back off.
+func enabledWaylandOutputs(s string) map[string]bool {
+	res := map[string]bool{}
+	var cur string
+	for _, line := range strings.Split(s, "\n") {
+		if line == "" {
+			continue
+		}
+		if line[0] != ' ' && line[0] != '\t' {
+			if f := strings.Fields(line); len(f) > 0 {
+				cur = f[0]
+			}
+		} else if cur != "" && strings.Contains(line, "Enabled:") {
+			res[cur] = strings.Contains(line, "yes")
+		}
+	}
+	return res
+}
+
 // setWaylandOutput powers every Wayland output off or on via wlr-randr. Whole-
 // screen (Wayland multi-output addressing isn't wired); on=false → --off enters
 // the display's power-save, on=true → --on re-enables it.
