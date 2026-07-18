@@ -973,15 +973,19 @@ func (s *Supervisor) postStart(m Mode) error {
 // short retry (labwc may still be settling under a non-Chrome app mode); a failure
 // just leaves the default layout, logged.
 func (s *Supervisor) applyWaylandDisabledOutputs() {
-	for _, name := range splitCSV(s.cfg.WaylandDisableOutputs) {
-		var err error
-		for attempt := 0; attempt < 5; attempt++ {
-			if _, err = s.cfg.wlrRandr(6*time.Second, "--output", name, "--off"); err == nil {
-				break
-			}
-			time.Sleep(time.Second)
-		}
-		if err != nil {
+	names := splitCSV(s.cfg.WaylandDisableOutputs)
+	if len(names) == 0 {
+		return
+	}
+	out, err := s.cfg.wlrRandr(6 * time.Second)
+	if err != nil {
+		return // labwc settling / down — the 10s watcher retries
+	}
+	// waylandOutputsToDisable applies the safety guard: it never returns an output
+	// when doing so would leave zero outputs on (e.g. the external TV is in standby),
+	// so the node can't be blanked to a black screen everywhere.
+	for _, name := range waylandOutputsToDisable(enabledWaylandOutputs(out), names) {
+		if _, err := s.cfg.wlrRandr(6*time.Second, "--output", name, "--off"); err != nil {
 			log.Printf("[wayland] disable output %s: %v", name, err)
 		} else {
 			log.Printf("[wayland] output %s forced off (-wayland-disable-output)", name)
@@ -1004,27 +1008,14 @@ func (s *Supervisor) StartWaylandOutputWatch() {
 // that labwc has re-enabled. Cheap in the steady state: it only forks wlr-randr --off
 // for an output that is actually enabled again (none, once settled).
 func (s *Supervisor) watchWaylandDisabledOutputs() {
-	names := splitCSV(s.cfg.WaylandDisableOutputs)
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
 	for range t.C {
-		if !s.OnWaylandPrimary() {
-			continue // labwc isn't the surface (an X11/KMS mode, or down) — nothing to hold
-		}
-		out, err := s.cfg.wlrRandr(6 * time.Second)
-		if err != nil {
-			continue // labwc settling / transient
-		}
-		enabled := enabledWaylandOutputs(out)
-		for _, name := range names {
-			if !enabled[name] {
-				continue // already off — the steady state, no fork
-			}
-			if _, err := s.cfg.wlrRandr(6*time.Second, "--output", name, "--off"); err != nil {
-				log.Printf("[wayland] re-disable output %s: %v", name, err)
-			} else {
-				log.Printf("[wayland] re-disabled output %s (labwc re-enabled it on hotplug)", name)
-			}
+		if s.OnWaylandPrimary() {
+			// Shares the guarded apply: re-disables an output labwc re-enabled on a
+			// hotplug, but never blanks the last remaining output. Cheap in the steady
+			// state — a no-op query when the target is already off.
+			s.applyWaylandDisabledOutputs()
 		}
 	}
 }

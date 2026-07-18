@@ -429,6 +429,35 @@ func enabledWaylandOutputs(s string) map[string]bool {
 	return res
 }
 
+// waylandOutputsToDisable returns which of `names` to force off given the current
+// enabled set — but ONLY if some OTHER output is enabled to hold the kiosk. If the
+// listed outputs are the only enabled ones (e.g. the external TV is in standby or
+// unplugged), it returns nothing: disabling the last output would black out the whole
+// node, so the internal panel is kept on as a fallback until the external returns.
+func waylandOutputsToDisable(enabled map[string]bool, names []string) []string {
+	inList := make(map[string]bool, len(names))
+	for _, n := range names {
+		inList[n] = true
+	}
+	keeper := false
+	for name, on := range enabled {
+		if on && !inList[name] {
+			keeper = true
+			break
+		}
+	}
+	if !keeper {
+		return nil
+	}
+	var out []string
+	for _, n := range names {
+		if enabled[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // setWaylandOutput powers every Wayland output off or on via wlr-randr. Whole-
 // screen (Wayland multi-output addressing isn't wired); on=false → --off enters
 // the display's power-save, on=true → --on re-enables it.

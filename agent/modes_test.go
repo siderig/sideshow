@@ -297,3 +297,31 @@ eDP-1 "Apple Computer Inc Color LCD (eDP-1)"
 		t.Error("empty input must yield an empty map")
 	}
 }
+
+// TestWaylandOutputsToDisable covers the blackout guard: only disable a listed
+// output when another output stays enabled to hold the kiosk — never blank the last
+// screen (which stranded disp-deb-air with zero outputs overnight when the TV slept).
+func TestWaylandOutputsToDisable(t *testing.T) {
+	names := []string{"eDP-1"}
+	tests := []struct {
+		name    string
+		enabled map[string]bool
+		want    []string
+	}{
+		{"TV on → disable internal", map[string]bool{"eDP-1": true, "HDMI-A-1": true}, []string{"eDP-1"}},
+		{"TV off (standby) → keep internal on", map[string]bool{"eDP-1": true, "HDMI-A-1": false}, nil},
+		{"TV absent → keep internal on", map[string]bool{"eDP-1": true}, nil},
+		{"internal already off", map[string]bool{"eDP-1": false, "HDMI-A-1": true}, nil},
+		{"nothing enabled", map[string]bool{}, nil},
+	}
+	for _, tc := range tests {
+		if got := waylandOutputsToDisable(tc.enabled, names); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// Multiple listed outputs: only the enabled ones come back, and only with a keeper present.
+	multi := waylandOutputsToDisable(map[string]bool{"eDP-1": true, "DP-2": true, "HDMI-A-1": true}, []string{"eDP-1", "DP-2"})
+	if !reflect.DeepEqual(multi, []string{"eDP-1", "DP-2"}) {
+		t.Errorf("multi: got %v, want [eDP-1 DP-2]", multi)
+	}
+}
